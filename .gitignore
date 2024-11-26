@@ -1,0 +1,22 @@
+# Node modules
+node_modules/
+
+# Build output
+dist/
+
+# Environment variables
+.env
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+
+# IDE files
+.vscode/
+.idea/
+
+# PM2 logs
+logs/pm2-*.log
