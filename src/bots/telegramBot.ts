@@ -7,15 +7,22 @@ import {
   handleDeleteWalletCommand,
   handleMainMenuCommand,
 } from '../controllers/walletController';
+import {
+  handleSetLiquidityCommand,
+  handleSetMintAuthorityCommand,
+  handleSetTopHoldersCommand,
+  handleStartListenerCommand,
+  handleStopListenerCommand,
+  handleShowFiltersCommand,
+} from '../controllers/filterController';
 
 // Define session data (if needed)
-interface SessionData {}
+interface SessionData {
+  // For conversation flows
+  awaitingInputFor?: string;
+}
 
 type MyContext = Context & SessionFlavor<SessionData>;
-
-declare global {
-  var tokenListenerInitialized: boolean;
-}
 
 export const createBot = (): Bot<MyContext> => {
   if (!config.telegramBotToken) {
@@ -35,7 +42,10 @@ Welcome to the Solana Trading Bot!
 
 Please choose an option:
 /wallet - Manage your Solana wallet
-/detect_tokens - Start detecting new token issuances
+/set_filters - Set token filters
+/show_filters - Show current filters
+/start_listener - Start token detection
+/stop_listener - Stop token detection
 /help - Show available commands
     `;
     await ctx.reply(welcomeMessage);
@@ -48,45 +58,53 @@ Please choose an option:
 Available Commands:
 /start - Start the bot and see options
 /wallet - Manage your Solana wallet
-/detect_tokens - Start detecting new token issuances
+/set_filters - Set token filters
+/show_filters - Show current filters
+/start_listener - Start token detection
+/stop_listener - Stop token detection
 /delete_wallet - Delete your Solana wallet
 /main_menu - Go back to the main menu
     `;
     await ctx.reply(helpMessage);
   });
 
-  // /wallet command handler
-  bot.command('wallet', async (ctx) => {
-    await handleWalletCommand(ctx);
+  // Wallet commands
+  bot.command('wallet', handleWalletCommand);
+  bot.command('delete_wallet', handleDeleteWalletCommand);
+  bot.command('main_menu', handleMainMenuCommand);
+
+  // Filter commands
+  bot.command('set_filters', async (ctx) => {
+    const message = `
+Please choose a filter to set:
+/set_liquidity - Set liquidity threshold
+/set_mint_authority - Set mint authority requirement
+/set_top_holders - Set top holders concentration threshold
+    `;
+    await ctx.reply(message);
   });
 
-  // /delete_wallet command handler
-  bot.command('delete_wallet', async (ctx) => {
-    await handleDeleteWalletCommand(ctx);
-  });
+  bot.command('set_liquidity', handleSetLiquidityCommand);
+  bot.command('set_mint_authority', handleSetMintAuthorityCommand);
+  bot.command('set_top_holders', handleSetTopHoldersCommand);
+  bot.command('show_filters', handleShowFiltersCommand);
 
-  // /main_menu command handler
-  bot.command('main_menu', async (ctx) => {
-    await handleMainMenuCommand(ctx);
-  });
+  // Listener commands
+  bot.command('start_listener', handleStartListenerCommand);
+  bot.command('stop_listener', handleStopListenerCommand);
 
-  // /detect_tokens command handler
-  bot.command('detect_tokens', async (ctx) => {
-    try {
-      // Initialize the token detection listener
-      // Ensure that the listener is only initialized once
-      if (!global.tokenListenerInitialized) {
-        const { initializeSolanaListener } = await import('../controllers/tokenDetectionController');
-        initializeSolanaListener();
-        global.tokenListenerInitialized = true;
-        await ctx.reply('📡 Token detection has been started.');
-        logger.info(`User ${ctx.from?.id} started token detection.`);
-      } else {
-        await ctx.reply('📡 Token detection is already running.');
-      }
-    } catch (error) {
-      logger.error(`Error in /detect_tokens: ${(error as Error).message}`);
-      await ctx.reply('❌ Failed to start token detection.');
+  // Handle text input for setting filters
+  bot.on('message:text', async (ctx, next) => {
+    const { awaitingInputFor } = ctx.session;
+
+    if (awaitingInputFor === 'set_liquidity') {
+      await handleSetLiquidityCommand(ctx);
+    } else if (awaitingInputFor === 'set_mint_authority') {
+      await handleSetMintAuthorityCommand(ctx);
+    } else if (awaitingInputFor === 'set_top_holders') {
+      await handleSetTopHoldersCommand(ctx);
+    } else {
+      await next();
     }
   });
 

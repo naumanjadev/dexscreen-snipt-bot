@@ -1,0 +1,135 @@
+// src/controllers/filterController.ts
+import { MyContext } from '../types';
+import { updateUserSettings, getUserSettings } from '../services/userSettingsService';
+import { startTokenListener, stopTokenListener } from '../services/solanaListener';
+
+export const handleSetLiquidityCommand = async (ctx: MyContext): Promise<void> => {
+  if (!ctx.session.awaitingInputFor) {
+    await ctx.reply('Please enter the minimum liquidity threshold in SOL (or type "no minimum"):');
+    ctx.session.awaitingInputFor = 'set_liquidity';
+  } else {
+    const input = ctx.message?.text?.trim().toLowerCase();
+    const userId = ctx.from?.id;
+
+    if (!userId || input === undefined) {
+      await ctx.reply('Unable to process your request.');
+      ctx.session.awaitingInputFor = undefined;
+      return;
+    }
+
+    if (input === 'no minimum') {
+      await updateUserSettings(userId, { liquidityThreshold: null });
+      await ctx.reply('Liquidity threshold removed.');
+    } else {
+      const value = parseFloat(input);
+      if (isNaN(value) || value < 0) {
+        await ctx.reply('Please enter a valid number.');
+        return;
+      }
+      await updateUserSettings(userId, { liquidityThreshold: value });
+      await ctx.reply(`Liquidity threshold set to ${value} SOL.`);
+    }
+    ctx.session.awaitingInputFor = undefined;
+  }
+};
+
+export const handleSetMintAuthorityCommand = async (ctx: MyContext): Promise<void> => {
+  if (!ctx.session.awaitingInputFor) {
+    await ctx.reply('Should the token have mint authority? (yes/no/no preference):');
+    ctx.session.awaitingInputFor = 'set_mint_authority';
+  } else {
+    const input = ctx.message?.text?.trim().toLowerCase();
+    const userId = ctx.from?.id;
+
+    if (!userId || input === undefined) {
+      await ctx.reply('Unable to process your request.');
+      ctx.session.awaitingInputFor = undefined;
+      return;
+    }
+
+    if (input === 'yes') {
+      await updateUserSettings(userId, { requireMintAuthority: true });
+      await ctx.reply('Filter set: Token must have mint authority.');
+    } else if (input === 'no') {
+      await updateUserSettings(userId, { requireMintAuthority: false });
+      await ctx.reply('Filter set: Token must not have mint authority.');
+    } else if (input === 'no preference') {
+      await updateUserSettings(userId, { requireMintAuthority: null });
+      await ctx.reply('Mint authority filter removed.');
+    } else {
+      await ctx.reply('Please respond with "yes", "no", or "no preference".');
+      return;
+    }
+    ctx.session.awaitingInputFor = undefined;
+  }
+};
+
+export const handleSetTopHoldersCommand = async (ctx: MyContext): Promise<void> => {
+  if (!ctx.session.awaitingInputFor) {
+    await ctx.reply('Enter the maximum allowed concentration percentage among top 10 holders (0-100):');
+    ctx.session.awaitingInputFor = 'set_top_holders';
+  } else {
+    const input = ctx.message?.text?.trim();
+    const userId = ctx.from?.id;
+
+    if (!userId || input === undefined) {
+      await ctx.reply('Unable to process your request.');
+      ctx.session.awaitingInputFor = undefined;
+      return;
+    }
+
+    const value = parseFloat(input);
+    if (isNaN(value) || value < 0 || value > 100) {
+      await ctx.reply('Please enter a valid percentage between 0 and 100.');
+      return;
+    }
+    await updateUserSettings(userId, { topHoldersThreshold: value });
+    await ctx.reply(`Top holders concentration threshold set to ${value}%.`);
+    ctx.session.awaitingInputFor = undefined;
+  }
+};
+
+export const handleShowFiltersCommand = async (ctx: MyContext): Promise<void> => {
+  const userId = ctx.from?.id;
+
+  if (!userId) {
+    await ctx.reply('Unable to retrieve user information.');
+    return;
+  }
+
+  const settings = await getUserSettings(userId);
+
+  const filters = `
+Your current filters are:
+- Liquidity Threshold: ${settings.liquidityThreshold !== null ? settings.liquidityThreshold + ' SOL' : 'No minimum'}
+- Mint Authority Required: ${
+    settings.requireMintAuthority === true
+      ? 'Yes'
+      : settings.requireMintAuthority === false
+      ? 'No'
+      : 'No preference'
+  }
+- Top Holders Concentration Threshold: ${
+    settings.topHoldersThreshold !== null ? settings.topHoldersThreshold + '%' : 'No limit'
+  }
+  `;
+  await ctx.reply(filters);
+};
+
+export const handleStartListenerCommand = async (ctx: MyContext): Promise<void> => {
+  const userId = ctx.from?.id;
+
+  if (!userId) {
+    await ctx.reply('Unable to retrieve user information.');
+    return;
+  }
+
+  // Start the listener for this user
+  startTokenListener(userId);
+  await ctx.reply('📡 Token detection has been started.');
+};
+
+export const handleStopListenerCommand = async (ctx: MyContext): Promise<void> => {
+  stopTokenListener();
+  await ctx.reply('📡 Token detection has been stopped.');
+};
