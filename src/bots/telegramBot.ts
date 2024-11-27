@@ -1,18 +1,21 @@
 // src/bots/telegramBot.ts
 import { Bot, Context, session, SessionFlavor } from 'grammy';
-
-// Extend the global object to include tokenListenerInitialized
-declare global {
-  var tokenListenerInitialized: boolean;
-}
 import { config } from '../config';
-import { handleCreateWallet } from '../controllers/walletController';
 import { logger } from '../utils/logger';
+import {
+  handleWalletCommand,
+  handleDeleteWalletCommand,
+  handleMainMenuCommand,
+} from '../controllers/walletController';
 
-// Define session data (if needed in the future)
+// Define session data (if needed)
 interface SessionData {}
 
 type MyContext = Context & SessionFlavor<SessionData>;
+
+declare global {
+  var tokenListenerInitialized: boolean;
+}
 
 export const createBot = (): Bot<MyContext> => {
   if (!config.telegramBotToken) {
@@ -31,7 +34,7 @@ export const createBot = (): Bot<MyContext> => {
 Welcome to the Solana Trading Bot!
 
 Please choose an option:
-/create_wallet - Create a new Solana wallet
+/wallet - Manage your Solana wallet
 /detect_tokens - Start detecting new token issuances
 /help - Show available commands
     `;
@@ -44,33 +47,27 @@ Please choose an option:
     const helpMessage = `
 Available Commands:
 /start - Start the bot and see options
-/create_wallet - Create a new Solana wallet
+/wallet - Manage your Solana wallet
 /detect_tokens - Start detecting new token issuances
+/delete_wallet - Delete your Solana wallet
+/main_menu - Go back to the main menu
     `;
     await ctx.reply(helpMessage);
   });
 
-  // /create_wallet command handler
-  bot.command('create_wallet', async (ctx) => {
-    try {
-      const { publicKey, encryptedPrivateKey } = handleCreateWallet();
-      const responseMessage = `
-✅ Wallet Created Successfully!
+  // /wallet command handler
+  bot.command('wallet', async (ctx) => {
+    await handleWalletCommand(ctx);
+  });
 
-*Public Key:*
-\`${publicKey}\`
+  // /delete_wallet command handler
+  bot.command('delete_wallet', async (ctx) => {
+    await handleDeleteWalletCommand(ctx);
+  });
 
-*Encrypted Private Key:*
-\`${encryptedPrivateKey}\`
-
-**IMPORTANT:** Save your encrypted private key securely. You'll need it to access your wallet.
-      `;
-      await ctx.reply(responseMessage, { parse_mode: 'Markdown' });
-      logger.info(`User ${ctx.from?.id} created a new wallet.`);
-    } catch (error) {
-      logger.error(`Error in /create_wallet: ${(error as Error).message}`);
-      await ctx.reply('❌ Failed to create wallet. Please try again.');
-    }
+  // /main_menu command handler
+  bot.command('main_menu', async (ctx) => {
+    await handleMainMenuCommand(ctx);
   });
 
   // /detect_tokens command handler

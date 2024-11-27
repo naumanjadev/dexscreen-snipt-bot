@@ -11,8 +11,8 @@ import {
   import { config } from '../config';
   import { encrypt, decrypt } from '../utils/encryption';
   
-  let connection: Connection;
-  
+  export let connection: Connection;
+
   export const initializeConnection = (): void => {
     connection = new Connection(config.solanaRpcUrl, 'confirmed');
     logger.info(`Connected to Solana RPC at ${config.solanaRpcUrl}`);

@@ -1,28 +1,31 @@
 // src/index.ts
-import dotenv from 'dotenv';
-dotenv.config();
-
-import { createBot } from './bots/telegramBot';
-import { initializeSolanaListener } from './controllers/tokenDetectionController';
-import { logger } from './utils/logger';
+import { config } from './config/index';
+import { logger } from "./utils/logger";
+import { connectDB } from './utils/connection';
 import { initializeConnection } from './services/solanaService';
+import { createBot } from './bots/telegramBot';
 
-// Initialize Solana connection
-initializeConnection();
+async function initiateTradingBot() {
 
-// Initialize Telegram Bot
-const bot = createBot();
+  // Initialize Solana connection
+  initializeConnection();
 
-// Start the bot
-bot.start();
-logger.info('Telegram bot started.');
+  // Initialize Database connection
+  await connectDB();
 
-// Handle unhandled promise rejections and exceptions
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error(`Unhandled Rejection at: ${promise}, reason: ${reason}`);
-});
+  // Create and launch the bot
+  const bot = createBot();
 
-process.on('uncaughtException', (error) => {
-  logger.error(`Uncaught Exception: ${error.message}`);
-  process.exit(1);
-});
+  await bot.api.setMyCommands([
+    { command: 'start', description: 'Start the bot' },
+    { command: 'wallet', description: 'Manage your Solana wallet' },
+    { command: 'delete_wallet', description: 'Delete your Solana wallet' },
+    { command: 'detect_tokens', description: 'Start detecting new token issuances' },
+    { command: 'help', description: 'Show available commands' },
+  ]).then(() => console.log('✅🔔 Commands are set successfully ✅🔔'));
+
+  await bot.start();
+  logger.info('🤖 Bot is up and running');
+}
+
+void initiateTradingBot();

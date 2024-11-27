@@ -9,4 +9,6 @@ export const config = {
   encryptedPrivateKey: process.env.ENCRYPTED_PRIVATE_KEY || '',
   encryptionKey: process.env.ENCRYPTION_KEY || '',
   logLevel: process.env.LOG_LEVEL || 'info',
+  DATABASE: process.env.DATABASE || '',
+  DB_NAME: process.env.DB_NAME || '',
 };

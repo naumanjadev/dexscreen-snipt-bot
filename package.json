@@ -2,7 +2,8 @@
   "name": "sol-snip-bot",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",  "scripts": {
+  "main": "index.js",
+  "scripts": {
     "build": "tsc",
     "start": "ts-node src/index.ts",
     "start:prod": "npm run build && pm2 start ecosystem.config.js",
@@ -19,6 +20,7 @@
   "dependencies": {
     "@solana/spl-token": "^0.4.9",
     "@solana/web3.js": "^1.95.5",
+    "@typegoose/typegoose": "^12.9.1",
     "axios": "^1.7.8",
     "dotenv": "^16.4.5",
     "grammy": "^1.32.0",
