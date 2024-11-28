@@ -1,12 +1,11 @@
 // src/index.ts
 import { config } from './config/index';
-import { logger } from "./utils/logger";
+import { logger } from './utils/logger';
 import { connectDB } from './utils/connection';
 import { initializeConnection } from './services/solanaService';
 import { createBot } from './bots/telegramBot';
 
 async function initiateTradingBot() {
-
   // Initialize Solana connection
   initializeConnection();
 
