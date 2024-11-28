@@ -1,4 +1,3 @@
-// src/controllers/filterController.ts
 import { MyContext } from '../types';
 import { updateUserSettings, getUserSettings } from '../services/userSettingsService';
 import { startTokenListener, stopTokenListener } from '../services/solanaListener';
@@ -99,21 +98,23 @@ export const handleShowFiltersCommand = async (ctx: MyContext): Promise<void> =>
 
   const settings = await getUserSettings(userId);
 
-  const filters = `
-Your current filters are:
-- Liquidity Threshold: ${settings.liquidityThreshold !== null ? settings.liquidityThreshold + ' SOL' : 'No minimum'}
-- Mint Authority Required: ${
+  const liquidityThresholdText =
+    settings.liquidityThreshold !== null ? `${settings.liquidityThreshold} SOL` : 'No minimum';
+  const requireMintAuthorityText =
     settings.requireMintAuthority === true
       ? 'Yes'
       : settings.requireMintAuthority === false
       ? 'No'
-      : 'No preference'
-  }
-- Top Holders Concentration Threshold: ${
-    settings.topHoldersThreshold !== null ? settings.topHoldersThreshold + '%' : 'No limit'
-  }
-  `;
-  await ctx.reply(filters);
+      : 'No preference';
+  const topHoldersThresholdText =
+    settings.topHoldersThreshold !== null ? `${settings.topHoldersThreshold}%` : 'No limit';
+
+  const filters = `<b>Your current filters are:</b>
+- <b>Liquidity Threshold:</b> ${liquidityThresholdText}
+- <b>Mint Authority Required:</b> ${requireMintAuthorityText}
+- <b>Top Holders Concentration Threshold:</b> ${topHoldersThresholdText}`;
+
+  await ctx.reply(filters, { parse_mode: 'HTML' });
 };
 
 export const handleStartListenerCommand = async (ctx: MyContext): Promise<void> => {

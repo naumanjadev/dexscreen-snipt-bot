@@ -1,5 +1,3 @@
-// src/controllers/walletController.ts
-
 import { MyContext } from '../types';
 import { LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { logger } from '../utils/logger';
@@ -201,9 +199,6 @@ export const handleConfirmWithdraw = async (ctx: MyContext): Promise<void> => {
     return;
   }
 
-  // Now TypeScript knows that withdrawAmount is a number
-  const amount: number = withdrawAmount;
-
   // Proceed with the withdrawal
   try {
     const userWallet = await getUserWallet(userId);
@@ -214,15 +209,15 @@ export const handleConfirmWithdraw = async (ctx: MyContext): Promise<void> => {
 
     const keypair = loadUserKeypair(userWallet.encryptedPrivateKey);
 
-    await sendSol(keypair, withdrawAddress, amount);
+    await sendSol(keypair, withdrawAddress, withdrawAmount);
 
     await ctx.reply(
-      `✅ Successfully withdrawn <b>${escapeHTML(amount.toString())} SOL</b> to address:\n<code>${escapeHTML(
+      `✅ Successfully withdrawn <b>${escapeHTML(withdrawAmount.toString())} SOL</b> to address:\n<code>${escapeHTML(
         withdrawAddress
       )}</code>`,
       { parse_mode: 'HTML' }
     );
-    logger.info(`User ${userId} withdrew ${amount} SOL to ${withdrawAddress}.`);
+    logger.info(`User ${userId} withdrew ${withdrawAmount} SOL to ${withdrawAddress}.`);
   } catch (error) {
     logger.error(`Withdrawal error for user ${userId}: ${(error as Error).message}`);
     await ctx.reply('❌ Withdrawal failed. Please try again later.');

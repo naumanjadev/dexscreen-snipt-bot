@@ -1,4 +1,3 @@
-// src/bots/telegramBot.ts
 import { Bot, session } from 'grammy';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -40,7 +39,7 @@ export const createBot = (): Bot<MyContext> => {
   // /start command handler
   bot.command('start', async (ctx) => {
     const welcomeMessage = `
-👋 *Welcome to the Solana Trading Bot!*
+👋 <b>Welcome to the Solana Trading Bot!</b>
 
 Please choose an option:
 /wallet - Manage your Solana wallet
@@ -50,14 +49,14 @@ Please choose an option:
 /stop_listener - Stop token detection
 /help - Show available commands
     `;
-    await ctx.reply(welcomeMessage, { parse_mode: 'Markdown' });
+    await ctx.reply(welcomeMessage, { parse_mode: 'HTML' });
     logger.info(`User ${ctx.from?.id} started the bot.`);
   });
 
   // /help command handler
   bot.command('help', async (ctx) => {
     const helpMessage = `
-❓ *Available Commands*
+❓ <b>Available Commands</b>
 /start - Start the bot and see options
 /wallet - Manage your Solana wallet
 /set_filters - Set token filters
@@ -67,7 +66,7 @@ Please choose an option:
 /delete_wallet - Delete your Solana wallet
 /main_menu - Go back to the main menu
     `;
-    await ctx.reply(helpMessage, { parse_mode: 'Markdown' });
+    await ctx.reply(helpMessage, { parse_mode: 'HTML' });
   });
 
   // Wallet commands
@@ -80,30 +79,37 @@ Please choose an option:
   bot.command('cancel', handleCancel);
   bot.command('main_menu', handleMainMenuCommand);
 
-  // Filter commands
-  bot.command('set_filters', async (ctx) => {
+  // Filter commands with aliases
+  bot.command(['set_filters', 'setfilters'], async (ctx) => {
     const message = `
-🔧 *Set Token Filters*
+🔧 <b>Set Token Filters</b>
 
 Please choose a filter to set:
 /set_liquidity - Set liquidity threshold
 /set_mint_authority - Set mint authority requirement
 /set_top_holders - Set top holders concentration threshold
     `;
-    await ctx.reply(message, { parse_mode: 'Markdown' });
+    await ctx.reply(message, { parse_mode: 'HTML' });
   });
 
-  bot.command('set_liquidity', handleSetLiquidityCommand);
-  bot.command('set_mint_authority', handleSetMintAuthorityCommand);
-  bot.command('set_top_holders', handleSetTopHoldersCommand);
-  bot.command('show_filters', handleShowFiltersCommand);
+  bot.command(['set_liquidity', 'setliquidity'], handleSetLiquidityCommand);
+  bot.command(['set_mint_authority', 'setmintauthority'], handleSetMintAuthorityCommand);
+  bot.command(['set_top_holders', 'settopholders'], handleSetTopHoldersCommand);
+  bot.command(['show_filters', 'showfilters'], handleShowFiltersCommand);
 
-  // Listener commands
-  bot.command('start_listener', handleStartListenerCommand);
-  bot.command('stop_listener', handleStopListenerCommand);
+  // Listener commands with aliases
+  bot.command(['start_listener', 'startlistener'], handleStartListenerCommand);
+  bot.command(['stop_listener', 'stoplistener'], handleStopListenerCommand);
 
   // Handle text input for setting filters and withdrawals
   bot.on('message:text', async (ctx, next) => {
+    const text = ctx.message.text;
+    if (text && text.startsWith('/')) {
+      // It's a command, skip processing as input
+      await next();
+      return;
+    }
+
     const { awaitingInputFor, awaitingConfirmation } = ctx.session;
 
     if (awaitingInputFor === 'set_liquidity') {
