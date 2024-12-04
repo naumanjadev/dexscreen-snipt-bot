@@ -1,3 +1,4 @@
+// src/types.ts
 import { Context, SessionFlavor } from 'grammy';
 
 export interface SessionData {

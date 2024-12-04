@@ -1,3 +1,4 @@
+// src/bot.ts
 import { Bot, session } from 'grammy';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -36,6 +37,22 @@ export const createBot = (): Bot<MyContext> => {
   // Initialize session middleware
   bot.use(session({ initial: (): MySession => ({}) }));
 
+  // Middleware to reset session data when a new command is received
+  bot.use(async (ctx, next) => {
+    if (ctx.message && ctx.message.text && ctx.message.text.startsWith('/')) {
+      ctx.session.awaitingInputFor = undefined;
+      // Keep awaitingConfirmation if it's for delete or export wallet or withdrawal confirmation
+      const currentCommand = ctx.message.text.split(' ')[0];
+      const confirmationCommands = ['/cancel', '/confirm_withdraw'];
+      if (!confirmationCommands.includes(currentCommand)) {
+        ctx.session.awaitingConfirmation = undefined;
+      }
+      ctx.session.withdrawAddress = undefined;
+      ctx.session.withdrawAmount = undefined;
+    }
+    await next();
+  });
+
   // /start command handler
   bot.command('start', async (ctx) => {
     const welcomeMessage = `
@@ -73,9 +90,7 @@ Please choose an option:
   bot.command('wallet', handleWalletCommand);
   bot.command('delete_wallet', handleDeleteWalletCommand);
   bot.command('export_wallet', handleExportWalletCommand);
-  bot.command('confirm_export', handleExportWalletCommand);
   bot.command('withdraw', handleWithdrawCommand);
-  bot.command('confirm_withdraw', handleConfirmWithdraw);
   bot.command('cancel', handleCancel);
   bot.command('main_menu', handleMainMenuCommand);
 
@@ -101,56 +116,71 @@ Please choose a filter to set:
   bot.command(['start_listener', 'startlistener'], handleStartListenerCommand);
   bot.command(['stop_listener', 'stoplistener'], handleStopListenerCommand);
 
-  // Handle text input for setting filters and withdrawals
-  bot.on('message:text', async (ctx, next) => {
+  // Handle text input for setting filters and confirmations
+  bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     if (text && text.startsWith('/')) {
-      // It's a command, skip processing as input
-      await next();
+      // It's a command, do nothing here
       return;
     }
 
     const { awaitingInputFor, awaitingConfirmation } = ctx.session;
 
-    if (awaitingInputFor === 'set_liquidity') {
-      await handleSetLiquidityCommand(ctx);
-    } else if (awaitingInputFor === 'set_mint_authority') {
-      await handleSetMintAuthorityCommand(ctx);
-    } else if (awaitingInputFor === 'set_top_holders') {
-      await handleSetTopHoldersCommand(ctx);
-    } else if (awaitingInputFor === 'withdraw_address') {
-      const input = ctx.message.text.trim();
-      // Validate Solana address
-      try {
-        new PublicKey(input);
-        ctx.session.withdrawAddress = input;
-        ctx.session.awaitingInputFor = 'withdraw_amount';
-        await ctx.reply('💰 Please enter the amount of SOL you want to withdraw:');
-      } catch (error) {
-        await ctx.reply('❌ Invalid Solana address. Please enter a valid Solana wallet address:');
-      }
-    } else if (awaitingInputFor === 'withdraw_amount') {
-      await handleWithdrawAmountInput(ctx);
-    } else if (awaitingConfirmation === 'withdraw') {
-      // Waiting for user to confirm withdrawal
-      if (ctx.message.text.trim().toLowerCase() === '/confirm_withdraw') {
-        await handleConfirmWithdraw(ctx);
+    if (awaitingInputFor || awaitingConfirmation) {
+      if (awaitingInputFor === 'set_liquidity') {
+        await handleSetLiquidityCommand(ctx);
+      } else if (awaitingInputFor === 'set_mint_authority') {
+        await handleSetMintAuthorityCommand(ctx);
+      } else if (awaitingInputFor === 'set_top_holders') {
+        await handleSetTopHoldersCommand(ctx);
+      } else if (awaitingInputFor === 'withdraw_address') {
+        const input = ctx.message.text.trim();
+        // Validate Solana address
+        try {
+          new PublicKey(input);
+          ctx.session.withdrawAddress = input;
+          ctx.session.awaitingInputFor = 'withdraw_amount';
+          await ctx.reply('💰 Please enter the amount of SOL you want to withdraw:');
+        } catch (error) {
+          await ctx.reply('❌ Invalid Solana address. Please enter a valid Solana wallet address:');
+        }
+      } else if (awaitingInputFor === 'withdraw_amount') {
+        await handleWithdrawAmountInput(ctx);
+      } else if (awaitingConfirmation === 'withdraw') {
+        // Waiting for user to confirm withdrawal
+        const input = ctx.message.text.trim().toLowerCase();
+        if (input === 'yes') {
+          await handleConfirmWithdraw(ctx);
+        } else {
+          await ctx.reply('Withdrawal cancelled.');
+          ctx.session.awaitingConfirmation = undefined;
+        }
+      } else if (awaitingConfirmation === 'delete_wallet') {
+        // Handle delete wallet confirmation
+        await handleDeleteWalletCommand(ctx);
+      } else if (awaitingConfirmation === 'export_wallet') {
+        // Handle export wallet confirmation
+        await handleExportWalletCommand(ctx);
       } else {
-        await ctx.reply('Please type /confirm_withdraw to proceed or /cancel to abort.');
+        // No specific handler, reset session data
+        ctx.session.awaitingInputFor = undefined;
+        ctx.session.awaitingConfirmation = undefined;
+        await ctx.reply('❗️ Please use the available commands. Type /help to see the list of commands.');
       }
     } else {
-      await next();
+      // No awaiting input or confirmation, inform the user
+      await ctx.reply('❗️ Please use the available commands. Type /help to see the list of commands.');
     }
   });
 
-  // Handle unknown commands
-  bot.on('message', async (ctx, next) => {
+  // Handle unknown commands and non-command messages
+  bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     if (text && text.startsWith('/')) {
-      // It's a command, let the command handlers process it
-      await next();
+      // Unknown command
+      await ctx.reply('❌ Unknown command. Type /help to see the list of available commands.');
     } else {
-      // Handle non-command messages
+      // Non-command messages
       await ctx.reply('❗️ Please use the available commands. Type /help to see the list of commands.');
     }
   });

@@ -1,3 +1,4 @@
+// src/controllers/filterController.ts
 import { MyContext } from '../types';
 import { updateUserSettings, getUserSettings } from '../services/userSettingsService';
 import { startTokenListener, stopTokenListener } from '../services/solanaListener';
@@ -126,11 +127,18 @@ export const handleStartListenerCommand = async (ctx: MyContext): Promise<void> 
   }
 
   // Start the listener for this user
-  startTokenListener(userId);
+  await startTokenListener(userId);
   await ctx.reply('📡 Token detection has been started.');
 };
 
 export const handleStopListenerCommand = async (ctx: MyContext): Promise<void> => {
-  stopTokenListener();
+  const userId = ctx.from?.id;
+
+  if (!userId) {
+    await ctx.reply('Unable to retrieve user information.');
+    return;
+  }
+
+  await stopTokenListener(userId);
   await ctx.reply('📡 Token detection has been stopped.');
 };
