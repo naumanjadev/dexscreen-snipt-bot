@@ -4,40 +4,48 @@ import { Keypair, PublicKey } from '@solana/web3.js';
 import { loadUserKeypair, getUserWallet } from './walletService';
 import { logger } from '../utils/logger';
 import { connection } from './solanaService';
-import { TokenInfo } from '../types';
+import { TokenInfo, MyContext } from '../types';
 import { swapTokens } from './dexService';
+import { stopTokenListener } from './solanaListener';
+import { getUserBalance } from './walletService';
+import { notifyUser } from '../bots/telegramBot';
 
 /**
  * Purchases a token for the user.
+ * @param ctx - The context of the Telegram message (for sending notifications).
  * @param userId - The unique identifier of the user.
  * @param tokenInfo - Information about the token to purchase.
  */
-export const purchaseToken = async (userId: number, tokenInfo: TokenInfo): Promise<void> => {
+export const purchaseToken = async (ctx: MyContext, userId: number, tokenInfo: TokenInfo): Promise<void> => {
   try {
     const userWallet = await getUserWallet(userId);
     if (!userWallet) {
       logger.error(`User wallet not found for user ${userId}. Cannot proceed with purchase.`);
+      await notifyUser(ctx, `❌ Wallet not found. Please set up your wallet before purchasing tokens.`);
       return;
     }
 
-    // Load the user's Keypair
     const fromKeypair = loadUserKeypair(userWallet.encryptedPrivateKey);
+    const userBalance = await getUserBalance(fromKeypair.publicKey);
 
-    logger.info(`Attempting to purchase token ${tokenInfo.mintAddress} for user ${userId}.`);
+    // Use 10% of the user's SOL balance for the purchase
+    const amountInSol = userBalance * 0.1;
+    if (amountInSol <= 0) {
+      logger.warn(`User ${userId} has insufficient balance to purchase token ${tokenInfo.mintAddress}.`);
+      await notifyUser(ctx, `❌ Insufficient balance to purchase token ${tokenInfo.mintAddress}.`);
+      return;
+    }
 
-    // Define the amount of SOL to use for the purchase
-    const amountInSol = 0.01; // Adjust the amount as needed
+    // Notify user that a matching token was found
+    await notifyUser(ctx, `🎉 Token Matched: ${tokenInfo.mintAddress}\nPreparing to buy token...`);
 
-    // Convert SOL amount to lamports
+    // Wait 2 seconds before executing the purchase
+    await delay(2000);
+
     const amountInLamports = amountInSol * 1e9;
-
-    // The mint address of SOL is special; we use wrapped SOL (WSOL)
     const wsolMint = new PublicKey('So11111111111111111111111111111111111111112');
-
-    // The mint address of the target token
     const tokenMint = new PublicKey(tokenInfo.mintAddress);
 
-    // Perform the token swap
     const success = await swapTokens({
       connection,
       walletKeypair: fromKeypair,
@@ -48,11 +56,25 @@ export const purchaseToken = async (userId: number, tokenInfo: TokenInfo): Promi
 
     if (success) {
       logger.info(`Successfully purchased token ${tokenInfo.mintAddress} for user ${userId}.`);
+      await notifyUser(
+        ctx,
+        `✅ Successfully purchased token ${tokenInfo.mintAddress} using ${amountInSol.toFixed(4)} SOL!`
+      );
+      // After buying, stop the listener for this user
+      await stopTokenListener(userId);
+      await notifyUser(ctx, `📡 Token detection has been stopped after your purchase.`);
     } else {
       logger.error(`Failed to purchase token ${tokenInfo.mintAddress} for user ${userId}.`);
+      await notifyUser(ctx, `❌ Failed to purchase token ${tokenInfo.mintAddress}. Please try again later.`);
     }
-
   } catch (error) {
     logger.error(`Failed to purchase token ${tokenInfo.mintAddress} for user ${userId}:`, error);
+    await notifyUser(ctx, `❌ An error occurred while purchasing token ${tokenInfo.mintAddress}.`);
   }
 };
+
+/**
+ * Delay execution for a specified number of milliseconds.
+ * @param ms The number of milliseconds to delay.
+ */
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

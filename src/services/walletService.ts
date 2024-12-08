@@ -98,3 +98,8 @@ export const sendTransaction = async (
     throw error;
   }
 };
+
+export const getUserBalance = async (publicKey: PublicKey): Promise<number> => {
+  const balanceLamports = await connection.getBalance(publicKey);
+  return balanceLamports / 1e9;
+};

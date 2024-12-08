@@ -1,64 +1,186 @@
-// src/services/tokenDataService.ts
-
-import { PublicKey, TokenAmount } from '@solana/web3.js'; // Import necessary types
 import axios, { AxiosError } from 'axios';
-import { getCache, setCache } from './cacheService';
-import { logger } from '../utils/logger';
-import { connection } from './solanaService'; // Import connection
+import { PublicKey } from '@solana/web3.js';
+import { getMint } from '@solana/spl-token';
+import { connection } from './solanaService'; // must export a 'connection' object (Connection)
+import { getCache, setCache } from './cacheService'; // must implement getCache(key) and setCache(key, value, ttl)
+import { logger } from '../utils/logger'; // must implement a logger with info, warn, error, debug methods
 
-// Define the structure of a Raydium pool
-interface RaydiumPool {
-  baseMint: string;
-  quoteMint: string;
-  baseReserve: string;
-  quoteReserve: string;
-  baseDecimal: number;
-  quoteDecimal: number;
-  // Add other relevant fields if necessary
+interface MintInfo {
+  chainId: number;
+  address: string;
+  decimals: number;
+  symbol?: string;
+  name?: string;
 }
 
-// Define maximum retry attempts and initial backoff duration
-const MAX_RETRIES = 5;
-const INITIAL_BACKOFF_MS = 1000; // 1 second
-const FETCH_TIMEOUT_MS = 30000; // 30 seconds
+interface RaydiumPool {
+  type: string;
+  programId: string;
+  id: string;
+  mintA: MintInfo;
+  mintB: MintInfo;
+  mintAmountA?: number;
+  mintAmountB?: number;
+}
 
-// Cache configuration
+interface RaydiumDataPayload {
+  count: number;
+  data: RaydiumPool[];
+}
+
+interface RaydiumApiResponse {
+  id: string;
+  success: boolean;
+  data: RaydiumDataPayload;
+}
+
+const MAX_RETRIES = 3;
+const INITIAL_BACKOFF_MS = 2000;
+const FETCH_TIMEOUT_MS = 30000;
 const CACHE_KEY = 'raydiumPools';
-const CACHE_TTL_SECONDS = 120; // 2 minutes
+const CACHE_TTL_SECONDS = 120;
 
-// Singleton promise to prevent multiple simultaneous fetches
 let fetchPromise: Promise<RaydiumPool[]> | null = null;
-let consecutiveFailures = 0;
-const MAX_CONSECUTIVE_FAILURES = 3;
 
 /**
- * Retrieves the liquidity for a given mint address.
- * @param mintAddress - The mint address of the token.
- * @returns The total liquidity in SOL.
+ * Delay execution for a specified number of milliseconds.
+ * @param ms The number of milliseconds to delay.
+ */
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Fetches Raydium pools data from the V3 endpoint, caching results and handling rate limits.
+ */
+const fetchRaydiumPoolsWithCache = async (): Promise<RaydiumPool[]> => {
+  // Check if we have cached data
+  const cachedData = await getCache(CACHE_KEY);
+  if (cachedData) {
+    logger.info('Using cached Raydium pools data from Redis.');
+    try {
+      const pools = JSON.parse(cachedData);
+      if (Array.isArray(pools)) {
+        return pools as RaydiumPool[];
+      } else {
+        logger.error('Cached data is not an array. Clearing cache and refetching.');
+        await setCache(CACHE_KEY, '', 1);
+      }
+    } catch (e) {
+      logger.error('Error parsing cached Raydium pools data. Clearing cache and refetching.', e);
+      await setCache(CACHE_KEY, '', 1);
+    }
+  }
+
+  if (fetchPromise) {
+    logger.debug('Fetch already in progress, awaiting existing operation.');
+    return fetchPromise;
+  }
+
+  fetchPromise = new Promise<RaydiumPool[]>(async (resolve) => {
+    const timer = setTimeout(() => {
+      logger.error('Fetch operation timed out.');
+      fetchPromise = null;
+      resolve([]);
+    }, FETCH_TIMEOUT_MS);
+
+    const url = 'https://api-v3.raydium.io/pools/info/list';
+    const params = {
+      poolType: 'all',
+      poolSortField: 'default',
+      sortType: 'desc',
+      pageSize: 100,
+      page: 1,
+    };
+
+    let attempt = 0;
+    let backoff = INITIAL_BACKOFF_MS;
+
+    while (attempt < MAX_RETRIES) {
+      try {
+        const response = await axios.get<RaydiumApiResponse>(url, {
+          headers: { 'User-Agent': 'sol-snip-bot/1.0' },
+          timeout: 10000,
+          params,
+          validateStatus: () => true,
+        });
+
+        if (
+          response.status === 200 &&
+          response.data?.success === true &&
+          Array.isArray(response.data.data?.data)
+        ) {
+          const raydiumPools = response.data.data.data;
+          await setCache(CACHE_KEY, JSON.stringify(raydiumPools), CACHE_TTL_SECONDS);
+          logger.info('Fetched and cached Raydium pools data in Redis.');
+
+          clearTimeout(timer);
+          fetchPromise = null;
+          resolve(raydiumPools);
+          return;
+        } else if (response.status === 429) {
+          logger.warn(`Rate limit (429) encountered. Waiting ${backoff}ms before retrying...`);
+          await delay(backoff);
+          backoff = Math.min(backoff * 2, 60000);
+        } else {
+          logger.error(
+            `Unexpected response from Raydium API. Status: ${response.status}, Data: ${JSON.stringify(response.data).slice(0,200)}... Retrying in ${backoff}ms.`
+          );
+          await delay(backoff);
+          backoff = Math.min(backoff * 2, 60000);
+        }
+      } catch (error) {
+        const message = axios.isAxiosError(error) ? (error as AxiosError).message : (error as Error).message;
+        logger.warn(`Attempt ${attempt + 1} failed: ${message}. Retrying in ${backoff}ms...`);
+        await delay(backoff);
+        backoff = Math.min(backoff * 2, 60000);
+      }
+      attempt++;
+    }
+
+    clearTimeout(timer);
+    fetchPromise = null;
+    logger.error('Max retries reached. Unable to fetch Raydium pools.');
+    resolve([]);
+  });
+
+  return fetchPromise;
+};
+
+/**
+ * Retrieves the liquidity of a given mint address across all Raydium pools.
+ * Liquidity is calculated by summing up the amount of the given mint found in all pools.
+ * If `mintA` matches the mint, add `mintAmountA` (adjusted by decimals).
+ * If `mintB` matches the mint, add `mintAmountB` (adjusted by decimals).
+ *
+ * @param mintAddress The mint address to check.
+ * @returns The total liquidity amount in terms of the number of tokens.
  */
 export const getLiquidity = async (mintAddress: string): Promise<number> => {
   try {
     const raydiumPools = await fetchRaydiumPoolsWithCache();
+    if (!Array.isArray(raydiumPools)) {
+      logger.error('Raydium pools data is not an array. Returning 0 liquidity.');
+      return 0;
+    }
+
     let totalLiquidity = 0;
-
     for (const pool of raydiumPools) {
-      const { baseMint, quoteMint, baseReserve, quoteReserve, baseDecimal, quoteDecimal } = pool;
+      const { mintA, mintB, mintAmountA, mintAmountB } = pool;
 
-      if (baseMint === mintAddress || quoteMint === mintAddress) {
-        // Adjust reserves based on token decimals
-        const adjustedBaseReserve = Number(baseReserve) / Math.pow(10, baseDecimal);
-        const adjustedQuoteReserve = Number(quoteReserve) / Math.pow(10, quoteDecimal);
+      const amountA = mintAmountA || 0;
+      const amountB = mintAmountB || 0;
 
-        if (baseMint === mintAddress) {
-          totalLiquidity += adjustedBaseReserve;
-        }
-        if (quoteMint === mintAddress) {
-          totalLiquidity += adjustedQuoteReserve;
-        }
+      if (mintA && mintA.address === mintAddress) {
+        const factor = Math.pow(10, mintA.decimals || 0);
+        totalLiquidity += amountA / factor;
+      }
+
+      if (mintB && mintB.address === mintAddress) {
+        const factor = Math.pow(10, mintB.decimals || 0);
+        totalLiquidity += amountB / factor;
       }
     }
 
-    logger.info(`Calculated liquidity for mint ${mintAddress}: ${totalLiquidity} SOL`);
+    logger.info(`Calculated liquidity for mint ${mintAddress}: ${totalLiquidity}`);
     return totalLiquidity;
   } catch (error) {
     logger.error('Error fetching liquidity from DEX:', error);
@@ -67,156 +189,18 @@ export const getLiquidity = async (mintAddress: string): Promise<number> => {
 };
 
 /**
- * Fetches Raydium pools data with caching and retry logic using Redis.
- * Ensures only one fetch operation occurs at a time.
- * Implements a global timeout to prevent indefinite hanging.
- * Exits the process after exceeding maximum consecutive failures.
- * @returns An array of Raydium pools.
- */
-const fetchRaydiumPoolsWithCache = async (): Promise<RaydiumPool[]> => {
-  // Attempt to retrieve cached data
-  const cachedData = await getCache(CACHE_KEY);
-  if (cachedData) {
-    logger.info('Using cached Raydium pools data from Redis.');
-    return JSON.parse(cachedData) as RaydiumPool[];
-  }
-
-  // If a fetch is already in progress, return the existing promise
-  if (fetchPromise) {
-    logger.info('Fetch already in progress. Awaiting existing fetch operation.');
-    return fetchPromise;
-  }
-
-  // Initialize the fetch promise with a timeout
-  fetchPromise = new Promise<RaydiumPool[]>(async (resolve, reject) => {
-    const timer = setTimeout(() => {
-      logger.error('Fetch operation timed out.');
-      fetchPromise = null; // Reset fetchPromise
-      consecutiveFailures++;
-      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-        logger.error('Maximum consecutive fetch failures reached. Exiting process.');
-        process.exit(1); // Exit the process
-      }
-      reject(new Error('Fetch operation timed out.'));
-    }, FETCH_TIMEOUT_MS);
-
-    let attempt = 0;
-    let backoff = INITIAL_BACKOFF_MS;
-
-    while (attempt < MAX_RETRIES) {
-      try {
-        const response = await axios.get<RaydiumPool[]>(
-          'https://api.raydium.io/v2/sdk/liquidity/mainnet.json',
-          {
-            headers: {
-              'User-Agent': 'sol-snip-bot/1.0', // Identify your application
-            },
-            timeout: 10000, // 10 seconds
-          }
-        );
-
-        const raydiumPools: RaydiumPool[] = response.data;
-
-        // Cache the data in Redis
-        await setCache(CACHE_KEY, JSON.stringify(raydiumPools), CACHE_TTL_SECONDS);
-        logger.info('Fetched and cached Raydium pools data in Redis.');
-
-        clearTimeout(timer);
-        fetchPromise = null; // Reset fetchPromise
-        consecutiveFailures = 0; // Reset failure counter
-        resolve(raydiumPools);
-        return;
-      } catch (error) {
-        if (axios.isAxiosError(error)) {
-          const axiosError = error as AxiosError;
-
-          if (axiosError.code === 'ECONNABORTED') {
-            // Handle timeout errors
-            attempt++;
-            logger.warn(
-              `Request timeout (${axiosError.code}). Retrying attempt ${attempt} of ${MAX_RETRIES} after ${backoff}ms...`
-            );
-          } else if (axiosError.response?.status === 429) {
-            // Handle rate limiting
-            const retryAfter = axiosError.response.headers['retry-after'];
-            backoff = retryAfter
-              ? parseInt(retryAfter, 10) * 1000 // Convert seconds to milliseconds
-              : backoff * 2; // Exponential backoff
-
-            attempt++;
-            logger.warn(
-              `Rate limited by Raydium API (status ${axiosError.response.status}). Retrying attempt ${attempt} of ${MAX_RETRIES} after ${backoff}ms...`
-            );
-          } else {
-            // Handle other Axios errors
-            logger.error(`Axios error: ${axiosError.message}`);
-            clearTimeout(timer);
-            fetchPromise = null; // Reset fetchPromise
-            consecutiveFailures++;
-            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-              logger.error('Maximum consecutive fetch failures reached. Exiting process.');
-              process.exit(1); // Exit the process
-            }
-            reject(error);
-            return;
-          }
-        } else {
-          // Handle non-Axios errors
-          logger.error(`Unexpected error: ${(error as Error).message}`);
-          clearTimeout(timer);
-          fetchPromise = null; // Reset fetchPromise
-          consecutiveFailures++;
-          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-            logger.error('Maximum consecutive fetch failures reached. Exiting process.');
-            process.exit(1); // Exit the process
-          }
-          reject(error);
-          return;
-        }
-
-        // Wait for the backoff duration before retrying
-        await delay(backoff);
-        // Double the backoff time for exponential backoff, with a maximum cap
-        backoff = Math.min(backoff * 2, 600000); // Cap at 10 minutes
-      }
-    }
-
-    // If all retries fail
-    logger.error('Max retries reached. Unable to fetch Raydium pools.');
-    clearTimeout(timer);
-    fetchPromise = null; // Reset fetchPromise
-    consecutiveFailures++;
-    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-      logger.error('Maximum consecutive fetch failures reached. Exiting process.');
-      process.exit(1); // Exit the process
-    }
-    reject(new Error('Max retries reached. Unable to fetch Raydium pools.'));
-  });
-
-  return fetchPromise;
-};
-
-/**
- * Delays execution for a specified duration.
- * @param ms - Duration in milliseconds.
- */
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * Checks if the mint authority exists for a given mint address.
- * @param mintAddress - The mint address of the token.
- * @returns A boolean indicating the presence of mint authority.
+ * Checks if the given mint address has an active mint authority.
+ * If the RPC or fetch fails, returns false.
+ *
+ * @param mintAddress The mint public key as a string.
  */
 export const hasMintAuthority = async (mintAddress: string): Promise<boolean> => {
   try {
     const mintPublicKey = new PublicKey(mintAddress);
-    const mintAccountInfo = await connection.getParsedAccountInfo(mintPublicKey);
-    if (mintAccountInfo.value) {
-      const data = mintAccountInfo.value.data as any;
-      const mintAuthority = data.parsed.info.mintAuthority;
-      return mintAuthority !== null;
-    }
-    return false;
+    const mintInfo = await getMint(connection, mintPublicKey);
+    const hasAuthority = mintInfo.mintAuthority !== null;
+    logger.info(`Mint ${mintAddress} has mint authority: ${hasAuthority}`);
+    return hasAuthority;
   } catch (error) {
     logger.error(`Error checking mint authority for ${mintAddress}:`, error);
     return false;
@@ -224,25 +208,37 @@ export const hasMintAuthority = async (mintAddress: string): Promise<boolean> =>
 };
 
 /**
- * Calculates the concentration of top holders for a given mint address.
- * @param mintAddress - The mint address of the token.
- * @returns The concentration percentage among top 10 holders.
+ * Calculates the concentration of holdings among the top N holders of a given token.
+ *
+ * @param mintAddress The mint public key as a string.
+ * @param topN The number of top holders to consider. Default is 10.
+ * @returns The percentage concentration of the top N holders.
  */
-export const getTopHoldersConcentration = async (mintAddress: string): Promise<number> => {
+export const getTopHoldersConcentration = async (
+  mintAddress: string,
+  topN: number = 10
+): Promise<number> => {
   try {
-    // Fetch token accounts holding this token
-    const largestAccounts = await connection.getTokenLargestAccounts(new PublicKey(mintAddress));
-    const totalSupply = await connection.getTokenSupply(new PublicKey(mintAddress));
+    const mintPublicKey = new PublicKey(mintAddress);
+    const largestAccounts = await connection.getTokenLargestAccounts(mintPublicKey);
+    if (!largestAccounts.value || largestAccounts.value.length === 0) {
+      logger.warn(`No token accounts found for mint ${mintAddress}.`);
+      return 0;
+    }
 
-    const top10Accounts = largestAccounts.value.slice(0, 10);
-    const top10Balance = top10Accounts.reduce(
-      (sum: number, account: TokenAmount) => sum + (account.uiAmount || 0),
-      0
-    );
+    const supplyResponse = await connection.getTokenSupply(mintPublicKey);
+    const totalSupply = supplyResponse.value.uiAmount || 0;
+    if (totalSupply === 0) {
+      logger.warn(`Total supply for mint ${mintAddress} is zero, cannot calculate concentration.`);
+      return 0;
+    }
 
-    const totalSupplyAmount = totalSupply.value.uiAmount || 0;
-    const concentration = totalSupplyAmount > 0 ? (top10Balance / totalSupplyAmount) * 100 : 0;
-    logger.info(`Top holders concentration for mint ${mintAddress}: ${concentration}%`);
+    const sortedAccounts = largestAccounts.value.sort((a, b) => (b.uiAmount || 0) - (a.uiAmount || 0));
+    const topAccounts = sortedAccounts.slice(0, topN);
+    const topSum = topAccounts.reduce((sum, acc) => sum + (acc.uiAmount || 0), 0);
+    const concentration = (topSum / totalSupply) * 100;
+
+    logger.info(`Top ${topN} holders concentration for mint ${mintAddress}: ${concentration.toFixed(2)}%`);
     return concentration;
   } catch (error) {
     logger.error(`Error calculating top holders concentration for ${mintAddress}:`, error);

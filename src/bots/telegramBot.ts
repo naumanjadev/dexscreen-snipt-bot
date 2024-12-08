@@ -28,6 +28,23 @@ import { MyContext, SessionData } from '../types';
 type MySession = SessionData;
 
 /**
+ * Sends a notification to the current user.
+ * @param ctx - The context from which to derive the chat ID.
+ * @param message - The message to send to the user.
+ */
+export const notifyUser = async (ctx: MyContext, message: string): Promise<void> => {
+  if (!ctx.chat || !ctx.chat.id) {
+    logger.warn(`No chat id found for user ${ctx.from?.id}, cannot send notification.`);
+    return;
+  }
+  try {
+    await ctx.api.sendMessage(ctx.chat.id, message);
+  } catch (error) {
+    logger.error(`Error sending notification to user ${ctx.from?.id}:`, error);
+  }
+};
+
+/**
  * Creates and configures the Telegram bot.
  * @returns An instance of the configured bot.
  */
@@ -198,3 +215,10 @@ Please choose a filter to set:
 
   return bot;
 };
+
+// Create and export the bot instance
+export const botInstance = createBot();
+
+// Optionally, start the bot if this file is the entry point
+// If the bot is started elsewhere, you can remove the following line
+// botInstance.start();
