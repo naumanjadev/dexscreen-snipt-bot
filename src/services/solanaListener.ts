@@ -8,8 +8,7 @@ import { TokenInfo } from '../types';
 import { purchaseToken } from './purchaseService';
 import { botInstance } from '../bots/telegramBot'; // Import the exported bot instance
 import axios from 'axios';
-import { Metadata } from '@metaplex-foundation/mpl-token-metadata';
-import { fetchTokenMetadata } from './tokenMetadataService';
+import { fetchTokenMetadata } from './tokenMetadataService'; // Import the metadata fetcher
 
 export const connection: Connection = new Connection(config.solanaRpcUrl, 'confirmed');
 
@@ -21,88 +20,82 @@ let isProcessing: boolean = false; // Flag to prevent concurrent processing
 const DEXSCREENER_TOKENS_URL = 'https://api.dexscreener.com/latest/dex/tokens/';
 
 /**
- * Fetch detailed token information from DexScreener with retry logic.
+ * Fetch detailed token information from DexScreener.
  * @param tokenAddress The mint address of the token.
- * @param retries Number of retry attempts.
- * @param delayMs Delay between retries in milliseconds.
  * @returns Token details or null if fetching fails.
  */
-const fetchTokenDetails = async (
-  tokenAddress: string,
-  retries = 3,
-  delayMs = 1000
-): Promise<any | null> => {
-  const formattedTokenAddress = tokenAddress.toLowerCase(); // Ensure lowercase
-
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      const response = await axios.get(`${DEXSCREENER_TOKENS_URL}${formattedTokenAddress}`);
-      if (response.status === 200) {
-        logger.debug(`DexScreener API Response for ${formattedTokenAddress}: ${JSON.stringify(response.data, null, 2)}`);
-        return response.data;
-      } else {
-        logger.error(`DexScreener API responded with status ${response.status} for token ${formattedTokenAddress}.`);
-        return null;
-      }
-    } catch (error) {
-      logger.error(`Attempt ${attempt}: Error fetching token details from DexScreener for ${formattedTokenAddress}: ${(error as Error).message}`);
-      if (attempt < retries) {
-        logger.info(`Retrying in ${delayMs}ms...`);
-        await new Promise(res => setTimeout(res, delayMs));
-      } else {
-        logger.error(`Failed to fetch token details for ${formattedTokenAddress} after ${retries} attempts.`);
-        return null;
-      }
+const fetchTokenDetails = async (tokenAddress: string): Promise<any | null> => {
+  try {
+    const response = await axios.get(`${DEXSCREENER_TOKENS_URL}${tokenAddress}`);
+    if (response.status === 200) {
+      logger.debug(
+        `DexScreener API Response for ${tokenAddress}: ${JSON.stringify(
+          response.data,
+          null,
+          2
+        )}`
+      );
+      return response.data;
+    } else {
+      logger.error(
+        `DexScreener API responded with status ${response.status} for token ${tokenAddress}.`
+      );
+      return null;
     }
+  } catch (error) {
+    logger.error(
+      `Error fetching token details from DexScreener for ${tokenAddress}: ${
+        (error as Error).message
+      }`
+    );
+    return null;
   }
-
-  return null;
 };
 
 /**
  * Constructs a detailed and catchy message with token information.
  * @param tokenInfo Basic token information.
  * @param dexData Detailed token information from DexScreener.
- * @param metadata Token metadata from Solana.
  * @returns Formatted message string.
  */
-const constructTokenMessage = (
+const constructTokenMessage = async (
   tokenInfo: TokenInfo,
-  dexData: any,
-  metadata: Metadata | null
-): string => {
+  dexData: any
+): Promise<string> => {
   const tokenAddress = tokenInfo.mintAddress;
 
-  // Access the pairs array directly from dexData
-  const tokenDetails = dexData?.pairs && dexData.pairs.length > 0 ? dexData.pairs[0] : null;
+  // Log the DexScreener data structure
+  logger.debug(`Constructing message with DexScreener data: ${JSON.stringify(dexData, null, 2)}`);
 
-  // Fetch token name and symbol from metadata if available
-  const tokenName = metadata?.data.data.name || 'N/A';
-  const tokenSymbol = metadata?.data.data.symbol || 'N/A';
+  // Adjust access based on DexScreener's response structure
+  const pairs = dexData.pairs || dexData.data?.pairs;
 
-  if (!tokenDetails && !metadata) {
-    return `🚨 <b>Token Match Found!</b>\n\n<b>Mint Address:</b> <code>${tokenAddress}</code>\n\n🔗 <a href="https://solscan.io/token/${tokenAddress}">View on SolScan</a>\n\n💡 <i>Unable to retrieve additional details.</i>\n\n💰 <b>Buying Token...</b>`;
-  }
+  if (pairs && pairs.length > 0) {
+    const tokenDetails = pairs[0];
+    const baseToken = tokenDetails.baseToken || {};
+    const quoteToken = tokenDetails.quoteToken || {};
+    const priceUsd = tokenDetails.priceUsd
+      ? parseFloat(tokenDetails.priceUsd).toFixed(6)
+      : 'N/A';
+    const liquidity = tokenDetails.liquidity?.usd
+      ? parseFloat(tokenDetails.liquidity.usd).toLocaleString()
+      : 'N/A';
+    const fdv = tokenDetails.fdv
+      ? parseFloat(tokenDetails.fdv).toLocaleString()
+      : 'N/A';
+    const marketCap = tokenDetails.marketCap
+      ? parseFloat(tokenDetails.marketCap).toLocaleString()
+      : 'N/A';
+    const dexUrl =
+      tokenDetails.url || `https://dexscreener.com/solana/${tokenAddress}`;
+    const creationTime = tokenDetails.creationTime
+      ? new Date(tokenDetails.creationTime * 1000).toUTCString()
+      : 'N/A';
 
-  if (!tokenDetails) {
-    return `🚨 <b>Token Match Found!</b>\n\n<b>Token Name:</b> ${tokenName}\n<b>Symbol:</b> ${tokenSymbol}\n<b>Mint Address:</b> <code>${tokenAddress}</code>\n\n🔗 <a href="https://solscan.io/token/${tokenAddress}">View on SolScan</a>\n\n💡 <i>Unable to retrieve additional details. The token may not be listed on any DEX yet.</i>\n\n💰 <b>Buying Token...</b>`;
-  }
+    return `🚀 <b>🔥 New Token Alert!</b>
 
-  const baseToken = tokenDetails.baseToken || {};
-  const quoteToken = tokenDetails.quoteToken || {};
-  const priceUsd = tokenDetails.priceUsd ? parseFloat(tokenDetails.priceUsd).toFixed(6) : 'N/A';
-  const liquidity = tokenDetails.liquidity?.usd ? parseFloat(tokenDetails.liquidity.usd).toLocaleString() : 'N/A';
-  const fdv = tokenDetails.fdv ? parseFloat(tokenDetails.fdv).toLocaleString() : 'N/A';
-  const marketCap = tokenDetails.marketCap ? parseFloat(tokenDetails.marketCap).toLocaleString() : 'N/A';
-  const dexUrl = tokenDetails.url || `https://dexscreener.com/solana/${tokenAddress}`;
-  const creationTime = tokenDetails.creationTime
-    ? new Date(tokenDetails.creationTime * 1000).toUTCString()
-    : 'N/A';
-
-  return `🚀 <b>🔥 New Token Alert!</b>
-
-<b>Token Name:</b> ${tokenName}
-<b>Symbol:</b> ${tokenSymbol}
+<b>Token Name:</b> ${baseToken.name || 'N/A'}
+<b>Symbol:</b> ${baseToken.symbol || 'N/A'}
 <b>Mint Address:</b> <code>${tokenAddress}</code>
 
 🌐 <b>Blockchain:</b> Solana
@@ -122,6 +115,43 @@ const constructTokenMessage = (
 
 🔔 To listen for more tokens, use /start_listener.
 `;
+  } else {
+    // DexScreener does not have pairs data; fetch token metadata
+    const metadata = await fetchTokenMetadata(tokenAddress);
+    const name = metadata?.name || 'N/A';
+    const symbol = metadata?.symbol || 'N/A';
+
+    if (name === 'N/A' && symbol === 'N/A') {
+      // Both DexScreener and Metaplex failed to provide details
+      return `🚨 <b>Token Match Found!</b>
+
+<b>Mint Address:</b> <code>${tokenAddress}</code>
+
+🔗 <a href="https://solscan.io/token/${tokenAddress}">View on SolScan</a>
+
+💡 <i>Additional details are unavailable.</i>
+
+💰 <b>Buying Token...</b>
+
+🔔 To listen for more tokens, use /start_listener.
+`;
+    }
+
+    return `🚨 <b>Token Match Found!</b>
+
+<b>Token Name:</b> ${name}
+<b>Symbol:</b> ${symbol}
+<b>Mint Address:</b> <code>${tokenAddress}</code>
+
+🔗 <a href="https://solscan.io/token/${tokenAddress}">View on SolScan</a>
+
+💡 <i>Additional details are unavailable.</i>
+
+💰 <b>Buying Token...</b>
+
+🔔 To listen for more tokens, use /start_listener.
+`;
+  }
 };
 
 /**
@@ -156,47 +186,36 @@ export const startTokenListener = async (userId: number): Promise<void> => {
           const accountId = keyedAccountInfo.accountId.toBase58();
           const tokenInfo: TokenInfo = { mintAddress: accountId };
 
-          logger.debug(`Received token update for account ID: ${accountId}`);
-
-          // Fetch detailed token information from DexScreener
-          const dexData = await fetchTokenDetails(accountId);
-
-          if (!dexData) {
-            logger.warn(`No DexScreener data found for token ${accountId}.`);
-          }
-
-          // Fetch token metadata from Solana
-          const metadata = await fetchTokenMetadata(accountId, connection);
-
-          if (!metadata) {
-            logger.warn(`No metadata found for token ${accountId}.`);
-          }
-
-          // Log the entire DexScreener response for debugging
-          logger.debug(`DexScreener response for ${accountId}: ${JSON.stringify(dexData, null, 2)}`);
-
-          // Log the token metadata for debugging
-          if (metadata) {
-            logger.debug(`Metadata for ${accountId}: ${JSON.stringify(metadata, null, 2)}`);
-          }
-
           // Create a snapshot of activeUserIds to allow safe removal during iteration
           const users = Array.from(activeUserIds);
 
           for (const uid of users) {
             try {
-              logger.debug(`Processing token ${accountId} for user ${uid}.`);
-
               const passesFilters = await applyFilters(tokenInfo, uid);
               if (passesFilters) {
-                logger.info(`Token ${accountId} passed filters for user ${uid}.`);
+                logger.info(
+                  `Token ${accountId} passed filters for user ${uid}. Fetching details and sending message.`
+                );
 
-                // Construct the detailed message with DexScreener and metadata
-                const message = constructTokenMessage(tokenInfo, dexData, metadata);
+                // Fetch detailed token information from DexScreener
+                const dexData = await fetchTokenDetails(accountId);
+
+                // Log DexScreener data for debugging
+                if (dexData) {
+                  logger.debug(
+                    `DexScreener Data for ${accountId}: ${JSON.stringify(
+                      dexData,
+                      null,
+                      2
+                    )}`
+                  );
+                }
+
+                // Construct the detailed message
+                const message = await constructTokenMessage(tokenInfo, dexData);
 
                 // Send the message to the user via Telegram
                 await botInstance.api.sendMessage(uid, message, { parse_mode: 'HTML' });
-                logger.info(`Sent token details to user ${uid}.`);
 
                 // Optionally, perform additional actions such as initiating a purchase
                 // await purchaseToken(tokenInfo, uid);
@@ -205,10 +224,16 @@ export const startTokenListener = async (userId: number): Promise<void> => {
                 activeUserIds.delete(uid);
                 logger.info(`Listener stopped for user ${uid} after token match.`);
               } else {
-                logger.debug(`Token ${accountId} did not pass filters for user ${uid}.`);
+                logger.debug(
+                  `Token ${accountId} did not pass filters for user ${uid}.`
+                );
               }
             } catch (error) {
-              logger.error(`Error processing token ${accountId} for user ${uid}: ${(error as Error).message}`);
+              logger.error(
+                `Error processing token ${accountId} for user ${uid}: ${
+                  (error as Error).message
+                }`
+              );
             }
           }
 

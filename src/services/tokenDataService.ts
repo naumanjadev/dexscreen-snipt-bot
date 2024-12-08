@@ -1,7 +1,7 @@
 import axios, { AxiosError } from 'axios';
 import { PublicKey } from '@solana/web3.js';
 import { getMint } from '@solana/spl-token';
-import { connection } from './solanaService'; // must export a 'connection' object (Connection)
+import { connection } from './solanaService'; 
 import { getCache, setCache } from './cacheService'; // must implement getCache(key) and setCache(key, value, ttl)
 import { logger } from '../utils/logger'; // must implement a logger with info, warn, error, debug methods
 
