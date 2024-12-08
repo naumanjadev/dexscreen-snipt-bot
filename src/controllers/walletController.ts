@@ -8,7 +8,7 @@ import {
   deleteUserWallet,
   getWalletBalance,
   loadUserKeypair,
-  sendSol,
+  sendTransaction, // Updated import
 } from '../services/walletService';
 import bs58 from 'bs58';
 
@@ -217,7 +217,7 @@ export const handleConfirmWithdraw = async (ctx: MyContext): Promise<void> => {
 
     const keypair = loadUserKeypair(userWallet.encryptedPrivateKey);
 
-    await sendSol(keypair, withdrawAddress, withdrawAmount);
+    await sendTransaction(keypair, withdrawAddress, withdrawAmount); // Updated function call
 
     await ctx.reply(
       `✅ Successfully withdrawn <b>${escapeHTML(

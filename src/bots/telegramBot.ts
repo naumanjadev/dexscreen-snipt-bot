@@ -1,4 +1,5 @@
 // src/bot.ts
+
 import { Bot, session } from 'grammy';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -23,9 +24,13 @@ import {
 import { PublicKey } from '@solana/web3.js';
 import { MyContext, SessionData } from '../types';
 
-// Initialize session data
+// Define the session data structure
 type MySession = SessionData;
 
+/**
+ * Creates and configures the Telegram bot.
+ * @returns An instance of the configured bot.
+ */
 export const createBot = (): Bot<MyContext> => {
   if (!config.telegramBotToken) {
     logger.error('TELEGRAM_BOT_TOKEN is not set in the environment variables.');

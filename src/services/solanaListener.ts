@@ -1,19 +1,25 @@
 // src/services/solanaListener.ts
+
 import { Connection, PublicKey } from '@solana/web3.js';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { applyFilters } from './tokenFilters';
 import { TokenInfo } from '../types';
+import { purchaseToken } from './purchaseService'; // Import purchaseToken
 
+// Initialize a connection to the Solana network
 export const connection: Connection = new Connection(config.solanaRpcUrl, 'confirmed');
+
 let listenerId: number | null = null;
 const activeUserIds: Set<number> = new Set();
 
 // SPL Token Program ID
-const SPL_TOKEN_PROGRAM_ID = new PublicKey(
-  'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
-);
+const SPL_TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 
+/**
+ * Starts the token listener for a specific user.
+ * @param userId - The unique identifier of the user.
+ */
 export const startTokenListener = async (userId: number): Promise<void> => {
   if (activeUserIds.has(userId)) {
     logger.warn(`Token detection is already active for user ${userId}.`);
@@ -40,13 +46,16 @@ export const startTokenListener = async (userId: number): Promise<void> => {
             const passesFilters = await applyFilters(tokenInfo, uid);
 
             if (passesFilters) {
-              logger.info(`Token ${accountId} passed filters for user ${uid}.`);
-              // Proceed to automate the token purchase or notify the user
+              logger.info(`Token ${accountId} passed filters for user ${uid}. Initiating purchase.`);
+              // Implement purchasing logic here
+              await purchaseToken(uid, tokenInfo);
             } else {
               logger.debug(`Token ${accountId} did not pass filters for user ${uid}.`);
             }
           } catch (error) {
-            logger.error(`Error processing token ${accountId} for user ${uid}: ${(error as Error).message}`);
+            logger.error(
+              `Error processing token ${accountId} for user ${uid}: ${(error as Error).message}`
+            );
           }
         }
       },
@@ -57,6 +66,10 @@ export const startTokenListener = async (userId: number): Promise<void> => {
   }
 };
 
+/**
+ * Stops the token listener for a specific user.
+ * @param userId - The unique identifier of the user.
+ */
 export const stopTokenListener = async (userId: number): Promise<void> => {
   if (!activeUserIds.has(userId)) {
     logger.warn(`Token detection is not active for user ${userId}.`);
