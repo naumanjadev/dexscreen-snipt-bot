@@ -169,7 +169,7 @@ export const startTokenListener = async (userId: number): Promise<void> => {
   if (listenerId === null) {
     listenerId = connection.onProgramAccountChange(
       new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
-      async (keyedAccountInfo) => {
+      async (keyedAccountInfo, context) => {
         if (isProcessing) {
           logger.debug('Listener is already processing an event. Skipping this event.');
           return;
@@ -185,7 +185,7 @@ export const startTokenListener = async (userId: number): Promise<void> => {
         try {
           const accountId = keyedAccountInfo.accountId.toBase58();
           const tokenInfo: TokenInfo = { mintAddress: accountId };
-
+          
           // Create a snapshot of activeUserIds to allow safe removal during iteration
           const users = Array.from(activeUserIds);
 
@@ -217,12 +217,14 @@ export const startTokenListener = async (userId: number): Promise<void> => {
                 // Send the message to the user via Telegram
                 await botInstance.api.sendMessage(uid, message, { parse_mode: 'HTML' });
 
-                // Optionally, perform additional actions such as initiating a purchase
-                // await purchaseToken(tokenInfo, uid);
+                // Perform the token purchase
+                const purchaseSuccess = await purchaseToken(uid, tokenInfo);
 
-                // Stop the listener for this user
-                activeUserIds.delete(uid);
-                logger.info(`Listener stopped for user ${uid} after token match.`);
+                if (purchaseSuccess) {
+                  // Stop the listener for this user
+                  activeUserIds.delete(uid);
+                  logger.info(`Listener stopped for user ${uid} after token match.`);
+                }
               } else {
                 logger.debug(
                   `Token ${accountId} did not pass filters for user ${uid}.`
@@ -253,7 +255,7 @@ export const startTokenListener = async (userId: number): Promise<void> => {
           isProcessing = false; // Release the processing lock
         }
       },
-      'confirmed'
+      'confirmed' // Ensure the commitment level is appropriate
     );
 
     logger.info('Solana token listener started.');

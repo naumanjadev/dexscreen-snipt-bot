@@ -1,28 +1,26 @@
 // src/services/purchaseService.ts
 
-import { Keypair, PublicKey } from '@solana/web3.js';
-import { loadUserKeypair, getUserWallet } from './walletService';
+import { PublicKey } from '@solana/web3.js';
+import { loadUserKeypair, getUserWallet, getUserBalance } from './walletService';
 import { logger } from '../utils/logger';
 import { connection } from './solanaService';
-import { TokenInfo, MyContext } from '../types';
+import { TokenInfo } from '../types';
 import { swapTokens } from './dexService';
-import { stopTokenListener } from './solanaListener';
-import { getUserBalance } from './walletService';
-import { notifyUser } from '../bots/telegramBot';
+import { notifyUserById } from '../bots/telegramBot'; // Adjust the path as necessary
 
 /**
  * Purchases a token for the user.
- * @param ctx - The context of the Telegram message (for sending notifications).
  * @param userId - The unique identifier of the user.
  * @param tokenInfo - Information about the token to purchase.
+ * @returns A boolean indicating whether the purchase was successful.
  */
-export const purchaseToken = async (ctx: MyContext, userId: number, tokenInfo: TokenInfo): Promise<void> => {
+export const purchaseToken = async (userId: number, tokenInfo: TokenInfo): Promise<boolean> => {
   try {
     const userWallet = await getUserWallet(userId);
     if (!userWallet) {
       logger.error(`User wallet not found for user ${userId}. Cannot proceed with purchase.`);
-      await notifyUser(ctx, `❌ Wallet not found. Please set up your wallet before purchasing tokens.`);
-      return;
+      await notifyUserById(userId, `❌ Wallet not found. Please set up your wallet before purchasing tokens.`);
+      return false;
     }
 
     const fromKeypair = loadUserKeypair(userWallet.encryptedPrivateKey);
@@ -32,12 +30,12 @@ export const purchaseToken = async (ctx: MyContext, userId: number, tokenInfo: T
     const amountInSol = userBalance * 0.1;
     if (amountInSol <= 0) {
       logger.warn(`User ${userId} has insufficient balance to purchase token ${tokenInfo.mintAddress}.`);
-      await notifyUser(ctx, `❌ Insufficient balance to purchase token ${tokenInfo.mintAddress}.`);
-      return;
+      await notifyUserById(userId, `❌ Insufficient balance to purchase token ${tokenInfo.mintAddress}.`);
+      return false;
     }
 
     // Notify user that a matching token was found
-    await notifyUser(ctx, `🎉 Token Matched: ${tokenInfo.mintAddress}\nPreparing to buy token...`);
+    await notifyUserById(userId, `🎉 Token Matched: ${tokenInfo.mintAddress}\nPreparing to buy token...`);
 
     // Wait 2 seconds before executing the purchase
     await delay(2000);
@@ -56,20 +54,21 @@ export const purchaseToken = async (ctx: MyContext, userId: number, tokenInfo: T
 
     if (success) {
       logger.info(`Successfully purchased token ${tokenInfo.mintAddress} for user ${userId}.`);
-      await notifyUser(
-        ctx,
+      await notifyUserById(
+        userId,
         `✅ Successfully purchased token ${tokenInfo.mintAddress} using ${amountInSol.toFixed(4)} SOL!`
       );
-      // After buying, stop the listener for this user
-      await stopTokenListener(userId);
-      await notifyUser(ctx, `📡 Token detection has been stopped after your purchase.`);
+      await notifyUserById(userId, `📡 Token detection has been stopped after your purchase.`);
+      return true;
     } else {
       logger.error(`Failed to purchase token ${tokenInfo.mintAddress} for user ${userId}.`);
-      await notifyUser(ctx, `❌ Failed to purchase token ${tokenInfo.mintAddress}. Please try again later.`);
+      await notifyUserById(userId, `❌ Failed to purchase token ${tokenInfo.mintAddress}. Please try again later.`);
+      return false;
     }
   } catch (error) {
     logger.error(`Failed to purchase token ${tokenInfo.mintAddress} for user ${userId}:`, error);
-    await notifyUser(ctx, `❌ An error occurred while purchasing token ${tokenInfo.mintAddress}.`);
+    await notifyUserById(userId, `❌ An error occurred while purchasing token ${tokenInfo.mintAddress}.`);
+    return false;
   }
 };
 

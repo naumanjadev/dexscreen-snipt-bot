@@ -216,9 +216,13 @@ Please choose a filter to set:
   return bot;
 };
 
+export const notifyUserById = async (userId: number, message: string): Promise<void> => {
+  try {
+    await botInstance.api.sendMessage(userId, message, { parse_mode: 'HTML' });
+  } catch (error) {
+    logger.error(`Error sending message to user ${userId}:`, error);
+  }
+};
+
 // Create and export the bot instance
 export const botInstance = createBot();
-
-// Optionally, start the bot if this file is the entry point
-// If the bot is started elsewhere, you can remove the following line
-// botInstance.start();
