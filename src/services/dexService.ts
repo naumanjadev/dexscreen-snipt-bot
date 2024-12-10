@@ -1,9 +1,17 @@
-import { Connection, Keypair, PublicKey, Transaction } from '@solana/web3.js';
-import { createJupiterApiClient, QuoteGetRequest, SwapRequest } from '@jup-ag/api';
+import { Connection, Keypair, PublicKey, Transaction, VersionedTransaction } from '@solana/web3.js';
+import {
+  createJupiterApiClient,
+  QuoteGetRequest,
+  SwapPostRequest,
+  QuoteResponse,
+  SwapResponse,
+} from '@jup-ag/api';
+import { logger } from '../utils/logger';
 
 /**
  * Performs a token swap using the Jupiter aggregator.
  * @param params - Parameters for the swap.
+ * @returns A boolean indicating whether the swap was successful.
  */
 export const swapTokens = async (params: {
   connection: Connection;
@@ -28,58 +36,70 @@ export const swapTokens = async (params: {
     const quoteRequest: QuoteGetRequest = {
       inputMint: sourceTokenMint.toBase58(),
       outputMint: destinationTokenMint.toBase58(),
-      amount: amountInLamports, // 'amount' should be a number
+      amount: amountInLamports,
       slippageBps: 50, // 0.5% slippage
     };
 
-    // Fetch quote
-    const quoteResponse = await jupiterApi.quoteGet(quoteRequest);
+    logger.debug(`Jupiter Quote Request: ${JSON.stringify(quoteRequest, null, 2)}`);
 
+    // Fetch quote
+    const quoteResponse: QuoteResponse = await jupiterApi.quoteGet(quoteRequest);
+
+    // Log the raw quote response for debugging
+    logger.debug(`Raw Quote Response: ${JSON.stringify(quoteResponse, null, 2)}`);
+
+    // Validate the quote response
     if (!quoteResponse) {
-      console.error('No routes found for the swap.');
+      logger.error('No quote received for the swap.');
       return false;
     }
 
-    // Use the quoteResponse as the best quote
-    const bestQuote = quoteResponse;
-
     // Prepare the swap request
-    const swapRequest: SwapRequest = {
-      quoteResponse: bestQuote, // Use 'quoteResponse' instead of 'route'
-      userPublicKey: walletKeypair.publicKey.toBase58(),
-      wrapAndUnwrapSol: true, // Automatically wrap and unwrap SOL if needed
+    const swapRequest: SwapPostRequest = {
+      swapRequest: {
+        quoteResponse, // Use the entire quote response
+        userPublicKey: walletKeypair.publicKey.toBase58(),
+        wrapAndUnwrapSol: true, // Automatically wrap and unwrap SOL if needed
+      },
     };
 
-    // Fetch the swap transaction
-    const swapResponse = await jupiterApi.swapPost({ swapRequest }); // Pass 'swapRequest' inside an object
+    logger.debug(`Jupiter Swap Request: ${JSON.stringify(swapRequest, null, 2)}`);
 
+    // Fetch the swap transaction
+    const swapResponse: SwapResponse = await jupiterApi.swapPost(swapRequest);
+
+    logger.debug(`Jupiter Swap Response: ${JSON.stringify(swapResponse, null, 2)}`);
+
+    // Validate the swap response
     if (!swapResponse.swapTransaction) {
-      console.error('Failed to get swap transaction.');
+      logger.error('Failed to get swap transaction from Jupiter.');
       return false;
     }
 
     // Deserialize the transaction
     const swapTransactionBuf = Buffer.from(swapResponse.swapTransaction, 'base64');
-    const transaction = Transaction.from(swapTransactionBuf);
+    const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
 
     // Sign the transaction
-    transaction.partialSign(walletKeypair);
+    transaction.sign([walletKeypair]);
 
     // Send the transaction
     const txid = await connection.sendRawTransaction(transaction.serialize());
+
+    logger.info(`Swap transaction sent. TXID: ${txid}`);
 
     // Confirm the transaction
     const confirmation = await connection.confirmTransaction(txid, 'confirmed');
 
     if (confirmation.value.err) {
-      console.error('Transaction failed:', confirmation.value.err);
+      logger.error('Transaction failed:', confirmation.value.err);
       return false;
     }
 
-    console.log('Swap successful:', txid);
+    logger.info(`Swap successful. Transaction ID: ${txid}`);
     return true;
   } catch (error: any) {
-    console.error('Error performing token swap:', error.message, error.stack);
+    logger.error(`Error performing token swap: ${error.message}`, error);
     return false;
   }
 };

@@ -9,15 +9,28 @@ import { purchaseToken } from './purchaseService';
 import { botInstance } from '../bots/telegramBot'; // Import the exported bot instance
 import axios from 'axios';
 import { fetchTokenMetadata } from './tokenMetadataService'; // Import the metadata fetcher
+import { getMintWithRateLimit } from './rpcRateLimiter'; // Import the rate-limited getMint
+import { Mint } from '@solana/spl-token';
 
+// DexScreener API Endpoint
+const DEXSCREENER_TOKENS_URL = 'https://api.dexscreener.com/latest/dex/tokens/';
+
+// Validate Mint Address
+const isValidMint = (address: string): boolean => {
+  try {
+    new PublicKey(address);
+    return PublicKey.isOnCurve(new PublicKey(address));
+  } catch {
+    return false;
+  }
+};
+
+// Connection to Solana RPC
 export const connection: Connection = new Connection(config.solanaRpcUrl, 'confirmed');
 
 let listenerId: number | null = null;
 const activeUserIds: Set<number> = new Set();
 let isProcessing: boolean = false; // Flag to prevent concurrent processing
-
-// DexScreener API Endpoint
-const DEXSCREENER_TOKENS_URL = 'https://api.dexscreener.com/latest/dex/tokens/';
 
 /**
  * Fetch detailed token information from DexScreener.
@@ -42,11 +55,10 @@ const fetchTokenDetails = async (tokenAddress: string): Promise<any | null> => {
       );
       return null;
     }
-  } catch (error) {
+  } catch (error: any) {
     logger.error(
-      `Error fetching token details from DexScreener for ${tokenAddress}: ${
-        (error as Error).message
-      }`
+      `Error fetching token details from DexScreener for ${tokenAddress}: ${error.message}`,
+      error
     );
     return null;
   }
@@ -184,6 +196,13 @@ export const startTokenListener = async (userId: number): Promise<void> => {
 
         try {
           const accountId = keyedAccountInfo.accountId.toBase58();
+
+          // Validate mint address before processing
+          if (!isValidMint(accountId)) {
+            logger.warn(`Invalid mint address detected: ${accountId}. Skipping.`);
+            return;
+          }
+
           const tokenInfo: TokenInfo = { mintAddress: accountId };
           
           // Create a snapshot of activeUserIds to allow safe removal during iteration
@@ -220,21 +239,26 @@ export const startTokenListener = async (userId: number): Promise<void> => {
                 // Perform the token purchase
                 const purchaseSuccess = await purchaseToken(uid, tokenInfo);
 
+                // Stop the listener for this user regardless of purchase success
+                activeUserIds.delete(uid);
+                
                 if (purchaseSuccess) {
-                  // Stop the listener for this user
-                  activeUserIds.delete(uid);
-                  logger.info(`Listener stopped for user ${uid} after token match.`);
+                  logger.info(`Listener stopped for user ${uid} after successful token purchase.`);
+                } else {
+                  logger.info(`Listener stopped for user ${uid} after failed token purchase.`);
                 }
+
+                // Optionally, notify the user that the listener has been stopped
+                // await notifyUserById(uid, `🔔 Token detection has been stopped.`);
               } else {
                 logger.debug(
                   `Token ${accountId} did not pass filters for user ${uid}.`
                 );
               }
-            } catch (error) {
+            } catch (error: any) {
               logger.error(
-                `Error processing token ${accountId} for user ${uid}: ${
-                  (error as Error).message
-                }`
+                `Error processing token ${accountId} for user ${uid}: ${error.message}`,
+                error
               );
             }
           }
@@ -245,12 +269,12 @@ export const startTokenListener = async (userId: number): Promise<void> => {
               connection.removeProgramAccountChangeListener(listenerId);
               logger.info('Solana token listener stopped as there are no active users.');
               listenerId = null;
-            } catch (error) {
-              logger.error(`Error stopping token listener: ${(error as Error).message}`);
+            } catch (error: any) {
+              logger.error(`Error stopping token listener: ${error.message}`, error);
             }
           }
-        } catch (error) {
-          logger.error(`Unexpected error in listener callback: ${(error as Error).message}`);
+        } catch (error: any) {
+          logger.error(`Unexpected error in listener callback: ${error.message}`, error);
         } finally {
           isProcessing = false; // Release the processing lock
         }
@@ -279,8 +303,8 @@ export const stopTokenListener = async (userId: number): Promise<void> => {
       connection.removeProgramAccountChangeListener(listenerId);
       logger.info('Solana token listener stopped.');
       listenerId = null;
-    } catch (error) {
-      logger.error(`Error stopping token listener: ${(error as Error).message}`);
+    } catch (error: any) {
+      logger.error(`Error stopping token listener: ${error.message}`, error);
     }
   }
 };

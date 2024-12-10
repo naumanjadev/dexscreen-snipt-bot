@@ -1,5 +1,3 @@
-// src/services/solanaService.ts
-
 import {
   Connection,
   Keypair,

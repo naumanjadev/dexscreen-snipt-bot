@@ -25,6 +25,7 @@
     "@typegoose/typegoose": "^12.9.1",
     "axios": "^1.7.9",
     "borsh": "^0.7.0",
+    "bottleneck": "^2.19.5",
     "bs58": "^6.0.0",
     "dotenv": "^16.4.5",
     "grammy": "^1.32.0",
