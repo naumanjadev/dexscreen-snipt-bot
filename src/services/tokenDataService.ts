@@ -1,44 +1,39 @@
 // src/services/tokenDataService.ts
 
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, Connection, clusterApiUrl } from '@solana/web3.js';
 import { getCache, setCache } from './cacheService';
-import axios, { AxiosError } from 'axios';
+import axios from 'axios';
 import { logger } from '../utils/logger';
-import { applyFilters } from './tokenFilters';
 import { TokenInfo } from '../types';
 import { purchaseToken } from './purchaseService';
-import { botInstance } from '../bots/telegramBot'; // Import the exported bot instance
-import { fetchTokenMetadata } from './tokenMetadataService'; // Import the metadata fetcher
+import { botInstance } from '../bots/telegramBot';
+import { fetchTokenMetadata } from './tokenMetadataService';
 import {
   getMintWithRateLimit,
   getTokenSupplyWithRateLimit,
   getTokenLargestAccountsWithRateLimit,
 } from './rpcRateLimiter';
-import { Mint } from '@solana/spl-token';
+import { Mint, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { TokenAccountBalancePair, TokenAmount } from '@solana/web3.js';
 
-// ------------------------------
-// Interfaces
-// ------------------------------
-
-// Removed LargestAccountInfo and TokenSupply interfaces
-// Utilize existing types from @solana/web3.js
-
-interface MintInfoExtended {
-  chainId: number;
-  address: string;
-  decimals: number;
-  symbol?: string;
-  name?: string;
-}
+const connection = new Connection(clusterApiUrl('mainnet-beta'), 'confirmed');
 
 interface TokenDataPayload {
-  // Define any additional fields if necessary
+  pubkey: string;
+  account: {
+    data: {
+      parsed: {
+        type: string; // "mint" for mint accounts
+        info: {
+          mintAuthority?: string;
+          supply?: string;
+          decimals?: number;
+        };
+      };
+    };
+    owner: string;
+  };
 }
-
-// ------------------------------
-// Constants
-// ------------------------------
 
 const MAX_RETRIES = 5;
 const INITIAL_BACKOFF_MS = 500;
@@ -46,28 +41,11 @@ const FETCH_TIMEOUT_MS = 30000;
 const CACHE_KEY = 'splTokenData';
 const CACHE_TTL_SECONDS = 120;
 
-// ------------------------------
-// Variables
-// ------------------------------
-
 let fetchPromise: Promise<TokenDataPayload[]> | null = null;
 
-// ------------------------------
-// Utility Functions
-// ------------------------------
-
-/**
- * Delay execution for a specified number of milliseconds.
- * @param ms The number of milliseconds to delay.
- */
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * Fetches SPL token data with caching and rate limiting.
- * @returns Array of token data payloads.
- */
 const fetchSplTokenDataWithCache = async (): Promise<TokenDataPayload[]> => {
-  // Check if we have cached data
   const cachedData = await getCache(CACHE_KEY);
   if (cachedData) {
     logger.info('Using cached SPL token data from cache.');
@@ -97,14 +75,13 @@ const fetchSplTokenDataWithCache = async (): Promise<TokenDataPayload[]> => {
       resolve([]);
     }, FETCH_TIMEOUT_MS);
 
-    const url = 'https://mainnet.helius-rpc.com/?api-key=34f4403f-f9da-4d03-a6df-3de140c97f06'; // Replace with appropriate RPC endpoint if needed
+    const url = 'https://mainnet.helius-rpc.com/?api-key=34f4403f-f9da-4d03-a6df-3de140c97f06';
 
     let attempt = 0;
     let backoff = INITIAL_BACKOFF_MS;
 
     while (attempt < MAX_RETRIES) {
       try {
-        // Example: Fetch all mint accounts (this is a placeholder; actual implementation may vary)
         const response = await axios.post(
           url,
           {
@@ -112,10 +89,10 @@ const fetchSplTokenDataWithCache = async (): Promise<TokenDataPayload[]> => {
             id: 1,
             method: 'getProgramAccounts',
             params: [
-              'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', // SPL Token Program ID
+              TOKEN_PROGRAM_ID.toBase58(),
               {
                 encoding: 'jsonParsed',
-                filters: [{ dataSize: 82 }], // Size of SPL Token mint accounts
+                filters: [{ dataSize: 82 }], // Mint accounts are 82 bytes
               },
             ],
           },
@@ -165,59 +142,98 @@ const fetchSplTokenDataWithCache = async (): Promise<TokenDataPayload[]> => {
   return fetchPromise;
 };
 
-/**
- * Retrieves the liquidity of a given mint address based on circulating supply.
- * Liquidity is approximated by considering the total supply minus locked or non-circulating tokens.
- *
- * @param mintAddress The mint address to check.
- * @returns The approximated liquidity amount in terms of the number of tokens.
- */
-export const getLiquidity = async (mintAddress: string): Promise<number> => {
+async function isLikelyValidMint(mintAddress: string): Promise<boolean> {
   try {
-    const mintInfo: Mint = await getMintWithRateLimit(mintAddress);
-    const totalSupply = Number(mintInfo.supply) / Math.pow(10, mintInfo.decimals);
-    // Approximation: Total liquidity is total supply minus locked tokens
-    // Implement actual logic to determine locked tokens if available
-    // For now, we'll assume all tokens are liquid
-    const liquidity = totalSupply;
-    logger.info(`Calculated liquidity for mint ${mintAddress}: ${liquidity}`);
-    return liquidity;
-  } catch (error: any) {
-    logger.error('Error fetching liquidity from SPL:', error);
-    return 0;
-  }
-};
-
-/**
- * Checks if the given mint address has an active mint authority.
- * If the RPC or fetch fails, returns false.
- *
- * @param mintAddress The mint public key as a string.
- * @returns Boolean indicating the presence of a mint authority.
- */
-export const hasMintAuthority = async (mintAddress: string): Promise<boolean> => {
-  try {
-    const mintInfo: Mint = await getMintWithRateLimit(mintAddress);
-    const hasAuthority = mintInfo.mintAuthority !== null;
-    logger.info(`Mint ${mintAddress} has mint authority: ${hasAuthority}`);
-    return hasAuthority;
-  } catch (error: any) {
-    logger.error(`Error checking mint authority for ${mintAddress}:`, error);
+    const pubkey = new PublicKey(mintAddress);
+    // Check if the address can be fetched and parsed as a mint
+    const info = await connection.getParsedAccountInfo(pubkey);
+    if (info.value && 'parsed' in info.value.data) {
+      // Check if parsed type == "mint"
+      const parsed = (info.value.data as any).parsed;
+      if (parsed && parsed.type === 'mint') {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    // Invalid or couldn't fetch
     return false;
   }
+}
+
+const safeGetMintInfo = async (mintAddress: string): Promise<Mint | null> => {
+  let pubkey: PublicKey;
+  try {
+    pubkey = new PublicKey(mintAddress);
+  } catch {
+    logger.warn(`Invalid mint address detected: ${mintAddress}. Skipping mint info fetch.`);
+    return null;
+  }
+
+  // Additional check before calling getMintWithRateLimit
+  const valid = await isLikelyValidMint(mintAddress);
+  if (!valid) {
+    logger.warn(`Not a valid mint account structure: ${mintAddress}. Skipping.`);
+    return null;
+  }
+
+  try {
+    const mintInfo: Mint = await getMintWithRateLimit(mintAddress);
+    return mintInfo;
+  } catch (error: any) {
+    logger.error(`Error in getMint for ${mintAddress}:`);
+    logger.error(error?.message || error);
+    return null;
+  }
 };
 
-/**
- * Calculates the concentration of holdings among the top N holders of a given token.
- *
- * @param mintAddress The mint public key as a string.
- * @param topN The number of top holders to consider. Default is 10.
- * @returns The percentage concentration of the top N holders.
- */
+export const getLiquidity = async (mintAddress: string): Promise<number> => {
+  const mintInfo = await safeGetMintInfo(mintAddress);
+  if (!mintInfo) {
+    logger.error(
+      `Error fetching circulating supply for mint ${mintAddress}: Mint info not available.`
+    );
+    return 0;
+  }
+
+  const totalSupply = Number(mintInfo.supply) / Math.pow(10, mintInfo.decimals);
+  const nonCirculatingSupply = 0; 
+  const circulatingSupply = totalSupply - nonCirculatingSupply;
+  logger.info(`Calculated circulating supply for mint ${mintAddress}: ${circulatingSupply}`);
+  return circulatingSupply;
+};
+
+export const hasMintAuthority = async (mintAddress: string): Promise<boolean> => {
+  const mintInfo = await safeGetMintInfo(mintAddress);
+  if (!mintInfo) {
+    logger.error(`Error checking mint authority for ${mintAddress}: Mint info not available.`);
+    return false;
+  }
+
+  const hasAuthority = mintInfo.mintAuthority !== null;
+  logger.info(`Mint ${mintAddress} has mint authority: ${hasAuthority}`);
+  return hasAuthority;
+};
+
 export const getTopHoldersConcentration = async (
   mintAddress: string,
   topN: number = 10
 ): Promise<number> => {
+  let pubkey: PublicKey;
+  try {
+    pubkey = new PublicKey(mintAddress);
+  } catch {
+    logger.warn(`Invalid mint address detected: ${mintAddress}. Skipping concentration calculation.`);
+    return 0;
+  }
+
+  // Verify if it's a valid mint
+  const valid = await isLikelyValidMint(mintAddress);
+  if (!valid) {
+    logger.warn(`Not a valid mint account structure: ${mintAddress}. Skipping concentration calculation.`);
+    return 0;
+  }
+
   try {
     const largestAccounts: TokenAccountBalancePair[] = await getTokenLargestAccountsWithRateLimit(mintAddress);
     if (!largestAccounts || largestAccounts.length === 0) {
@@ -232,21 +248,15 @@ export const getTopHoldersConcentration = async (
       return 0;
     }
 
-    // Sort the largest accounts in descending order based on uiAmount
     const sortedAccounts = largestAccounts.sort(
-      (a: TokenAccountBalancePair, b: TokenAccountBalancePair) => (b.uiAmount || 0) - (a.uiAmount || 0)
+      (a, b) => (b.uiAmount || 0) - (a.uiAmount || 0)
     );
 
     const topAccounts = sortedAccounts.slice(0, topN);
-    const topSum = topAccounts.reduce(
-      (sum: number, acc: TokenAccountBalancePair) => sum + (acc.uiAmount || 0),
-      0
-    );
+    const topSum = topAccounts.reduce((sum, acc) => sum + (acc.uiAmount || 0), 0);
     const concentration = (topSum / totalSupply) * 100;
 
-    logger.info(
-      `Top ${topN} holders concentration for mint ${mintAddress}: ${concentration.toFixed(2)}%`
-    );
+    logger.info(`Top ${topN} holders concentration for mint ${mintAddress}: ${concentration.toFixed(2)}%`);
     return concentration;
   } catch (error: any) {
     logger.error(`Error calculating top holders concentration for ${mintAddress}:`, error);
@@ -254,27 +264,52 @@ export const getTopHoldersConcentration = async (
   }
 };
 
-/**
- * Example function to process new token data. This can be expanded based on your application's needs.
- * @param mintAddress The mint address of the token.
- */
 export const processNewToken = async (mintAddress: string) => {
   try {
-    const liquidity = await getLiquidity(mintAddress);
-    const hasAuthority = await hasMintAuthority(mintAddress);
-    const concentration = await getTopHoldersConcentration(mintAddress);
+    new PublicKey(mintAddress);
+  } catch {
+    logger.warn(`Invalid mint address detected: ${mintAddress}. Skipping processing.`);
+    return;
+  }
 
-    logger.info(`New Mint Details:
-      Address: ${mintAddress}
-      Liquidity: ${liquidity}
-      Has Mint Authority: ${hasAuthority}
-      Top Holders Concentration: ${concentration.toFixed(2)}%
-    `);
+  const liquidity = await getLiquidity(mintAddress);
+  const hasAuthority = await hasMintAuthority(mintAddress);
+  const concentration = await getTopHoldersConcentration(mintAddress);
 
-    // Implement additional logic as needed, such as applying filters, notifying users, etc.
-  } catch (error) {
-    logger.error(`Error processing new token ${mintAddress}:`, error);
+  logger.info(`New Mint Details:
+    Address: ${mintAddress}
+    Liquidity: ${liquidity}
+    Has Mint Authority: ${hasAuthority}
+    Top Holders Concentration: ${concentration.toFixed(2)}%
+  `);
+};
+
+async function fetchNonCirculatingAccounts(): Promise<PublicKey[]> {
+  try {
+    const supplyInfo = await connection.getSupply();
+    const nonCirculatingAccounts = supplyInfo.value.nonCirculatingAccounts.map(
+      (address) => new PublicKey(address)
+    );
+    return nonCirculatingAccounts;
+  } catch (error: any) {
+    logger.error(`Error fetching non-circulating accounts: ${error.message}`);
+    return [];
+  }
+}
+
+export const getCirculatingSupply = async (): Promise<number> => {
+  try {
+    const supplyInfo = await connection.getSupply();
+    const circulatingSupply = supplyInfo.value.circulating;
+    logger.info(`Circulating supply: ${circulatingSupply} lamports`);
+    return circulatingSupply;
+  } catch (error: any) {
+    logger.error(`Error retrieving circulating supply:`, error);
+    return 0;
   }
 };
 
-// Export other necessary functions or data as needed
+export {
+  fetchSplTokenDataWithCache,
+  fetchNonCirculatingAccounts
+};
