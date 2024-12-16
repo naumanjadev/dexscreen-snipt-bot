@@ -18,8 +18,10 @@ async function initiateTradingBot() {
     .setMyCommands([
       { command: 'start', description: 'Start the bot' },
       { command: 'wallet', description: 'Manage your Solana wallet' },
-      { command: 'delete_wallet', description: 'Delete your Solana wallet' },
-      { command: 'detect_tokens', description: 'Start detecting new token issuances' },
+      { command: 'start_listener', description: 'Start detecting new token issuances' },
+      { command: 'stop_listener', description: 'Stop detecting new token issuances' },
+      { command: 'set_boost_amount', description: 'Set your boost amount filter' },
+      { command: 'show_filters', description: 'Show current boost amount filter' },
       { command: 'help', description: 'Show available commands' },
     ])
     .then(() => console.log('✅🔔 Commands are set successfully ✅🔔'));

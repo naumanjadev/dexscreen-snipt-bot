@@ -1,173 +1,278 @@
-// src/services/solanaListener.ts
-
 import { Connection, PublicKey } from '@solana/web3.js';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { applyFilters } from './tokenFilters';
+import { getUserSettings } from './userSettingsService';
 import { TokenInfo } from '../types';
 import { purchaseToken } from './purchaseService';
-import { botInstance } from '../bots/telegramBot'; // Import the exported bot instance
+import { botInstance } from '../bots/telegramBot';
 import axios from 'axios';
-import { fetchTokenMetadata } from './tokenMetadataService'; // Import the metadata fetcher
-import { getMintWithRateLimit } from './rpcRateLimiter'; // Import the rate-limited getMint
-import { Mint } from '@solana/spl-token';
+import { fetchTokenMetadata } from './tokenMetadataService';
 
-// DexScreener API Endpoint
-const DEXSCREENER_TOKENS_URL = 'https://api.dexscreener.com/latest/dex/tokens/';
+// DexScreener API Endpoints
+const DEXSCREENER_BOOSTS_URL = 'https://api.dexscreener.com/token-boosts/latest/v1';
+const DEXSCREENER_PAIR_TOKEN_URL = 'https://api.dexscreener.com/latest/dex/tokens/';
+
+// Type Definitions for DexScreener Responses
+interface DexScreenerBoostedToken {
+  tokenAddress: string;
+  chainId: string;
+  url: string;
+  totalAmount: number;
+  description: string;
+  // Add other relevant fields as per DexScreener API response
+}
+
+interface DexScreenerPairResponse {
+  pairs: Array<{
+    pairCreatedAt: number; // Unix timestamp in seconds or milliseconds
+    // Add other relevant fields as per DexScreener API response
+  }>;
+}
 
 // Validate Mint Address
 const isValidMint = (address: string): boolean => {
   try {
-    new PublicKey(address);
-    return PublicKey.isOnCurve(new PublicKey(address));
-  } catch {
+    const publicKey = new PublicKey(address);
+    return PublicKey.isOnCurve(publicKey);
+  } catch (error: any) {
+    logger.debug(`Invalid mint address: ${address}. Error: ${error.message}`);
     return false;
   }
 };
 
-// Connection to Solana RPC
 export const connection: Connection = new Connection(config.solanaRpcUrl, 'confirmed');
 
-let listenerId: number | null = null;
 const activeUserIds: Set<number> = new Set();
-let isProcessing: boolean = false; // Flag to prevent concurrent processing
+let isProcessing: boolean = false; 
+let intervalId: NodeJS.Timeout | null = null;
 
 /**
- * Fetch detailed token information from DexScreener.
- * @param tokenAddress The mint address of the token.
- * @returns Token details or null if fetching fails.
+ * Fetch the latest boosted tokens from DexScreener.
+ * @returns Array of boosted token objects or empty array on failure.
  */
-const fetchTokenDetails = async (tokenAddress: string): Promise<any | null> => {
+const fetchLatestBoostedTokens = async (): Promise<DexScreenerBoostedToken[]> => {
   try {
-    const response = await axios.get(`${DEXSCREENER_TOKENS_URL}${tokenAddress}`);
-    if (response.status === 200) {
+    const response = await axios.get(DEXSCREENER_BOOSTS_URL);
+    if (response.status === 200 && response.data) {
+      const data: DexScreenerBoostedToken[] = Array.isArray(response.data) ? response.data : [response.data];
       logger.debug(
-        `DexScreener API Response for ${tokenAddress}: ${JSON.stringify(
-          response.data,
-          null,
-          2
-        )}`
+        `DexScreener Latest Boosted Tokens API Response: ${JSON.stringify(data, null, 2)}`
       );
-      return response.data;
+      return data;
     } else {
-      logger.error(
-        `DexScreener API responded with status ${response.status} for token ${tokenAddress}.`
-      );
-      return null;
+      logger.error(`Failed to fetch boosted tokens. Status: ${response.status}`);
+      return [];
     }
   } catch (error: any) {
-    logger.error(
-      `Error fetching token details from DexScreener for ${tokenAddress}: ${error.message}`,
-      error
-    );
+    logger.error(`Error fetching latest boosted tokens: ${error.message}`, error);
+    return [];
+  }
+};
+
+/**
+ * Fetch token pair details from DexScreener to get creation time
+ * @param tokenAddress Token mint address
+ * @returns Token pair creation timestamp in seconds or milliseconds
+ */
+const fetchTokenCreationTime = async (tokenAddress: string): Promise<{ timestamp: number, unit: 'seconds' | 'milliseconds' } | null> => {
+  try {
+    const response = await axios.get<DexScreenerPairResponse>(`${DEXSCREENER_PAIR_TOKEN_URL}${tokenAddress}`);
+    if (response.status === 200 && response.data?.pairs?.length > 0) {
+      const pair = response.data.pairs[0];
+      const pairCreatedAt = pair.pairCreatedAt;
+      
+      if (pairCreatedAt) {
+        // Log the raw pairCreatedAt value
+        logger.debug(`Token ${tokenAddress} pairCreatedAt raw value: ${pairCreatedAt}`);
+        
+        // Determine the unit based on the length of the timestamp
+        let unit: 'seconds' | 'milliseconds';
+        if (pairCreatedAt.toString().length === 10) {
+          unit = 'seconds';
+        } else if (pairCreatedAt.toString().length === 13) {
+          unit = 'milliseconds';
+        } else {
+          logger.warn(`Unexpected pairCreatedAt length for token ${tokenAddress}: ${pairCreatedAt}`);
+          return null;
+        }
+
+        logger.debug(`Token ${tokenAddress} pairCreatedAt unit: ${unit}`);
+        return { timestamp: pairCreatedAt, unit };
+      } else {
+        logger.warn(`pairCreatedAt not found for token ${tokenAddress}`);
+      }
+    } else {
+      logger.warn(`No pairs found for token ${tokenAddress}`);
+    }
+    return null;
+  } catch (error: any) {
+    logger.error(`Error fetching token creation time for ${tokenAddress}: ${error.message}`, error);
     return null;
   }
 };
 
 /**
- * Constructs a detailed and catchy message with token information.
- * @param tokenInfo Basic token information.
- * @param dexData Detailed token information from DexScreener.
- * @returns Formatted message string.
+ * Check if token is created within the last 30 minutes
+ * @param mintAddress Token mint address
+ */
+const isTokenYoungerThan30Mins = async (mintAddress: string): Promise<boolean> => {
+  const creationData = await fetchTokenCreationTime(mintAddress);
+  if (!creationData) return false;
+
+  let creationTimeInSeconds: number;
+
+  if (creationData.unit === 'milliseconds') {
+    creationTimeInSeconds = Math.floor(creationData.timestamp / 1000);
+  } else {
+    creationTimeInSeconds = creationData.timestamp;
+  }
+
+  const currentTime = Math.floor(Date.now() / 1000); // Current time in seconds
+  const diff = currentTime - creationTimeInSeconds; 
+  logger.debug(`Token ${mintAddress} pairCreatedAt (seconds): ${creationTimeInSeconds}`);
+  logger.debug(`Current Time (seconds): ${currentTime}`);
+  logger.debug(`Token ${mintAddress} age: ${diff} seconds`);
+
+  return diff >= 0 && diff <= 1800; // 0 <= diff <= 1800 seconds
+};
+
+/**
+ * Constructs a message when token passes filters
  */
 const constructTokenMessage = async (
   tokenInfo: TokenInfo,
-  dexData: any
+  dexData: DexScreenerBoostedToken
 ): Promise<string> => {
   const tokenAddress = tokenInfo.mintAddress;
 
-  // Log the DexScreener data structure
-  logger.debug(`Constructing message with DexScreener data: ${JSON.stringify(dexData, null, 2)}`);
+  // Attempt to get name and symbol from on-chain metadata
+  const metadata = await fetchTokenMetadata(tokenAddress);
+  const name = metadata?.name || 'N/A';
+  const symbol = metadata?.symbol || 'N/A';
 
-  // Adjust access based on DexScreener's response structure
-  const pairs = dexData.pairs || dexData.data?.pairs;
+  const url = dexData.url || 'N/A';
+  const chainId = dexData.chainId || 'N/A';
+  const boostAmount = dexData.totalAmount || 0;
+  const description = dexData.description || 'N/A';
 
-  if (pairs && pairs.length > 0) {
-    const tokenDetails = pairs[0];
-    const baseToken = tokenDetails.baseToken || {};
-    const quoteToken = tokenDetails.quoteToken || {};
-    const priceUsd = tokenDetails.priceUsd
-      ? parseFloat(tokenDetails.priceUsd).toFixed(6)
-      : 'N/A';
-    const liquidity = tokenDetails.liquidity?.usd
-      ? parseFloat(tokenDetails.liquidity.usd).toLocaleString()
-      : 'N/A';
-    const fdv = tokenDetails.fdv
-      ? parseFloat(tokenDetails.fdv).toLocaleString()
-      : 'N/A';
-    const marketCap = tokenDetails.marketCap
-      ? parseFloat(tokenDetails.marketCap).toLocaleString()
-      : 'N/A';
-    const dexUrl =
-      tokenDetails.url || `https://dexscreener.com/solana/${tokenAddress}`;
-    const creationTime = tokenDetails.creationTime
-      ? new Date(tokenDetails.creationTime * 1000).toUTCString()
-      : 'N/A';
-
-    return `🚀 <b>🔥 New Token Alert!</b>
-
-<b>Token Name:</b> ${baseToken.name || 'N/A'}
-<b>Symbol:</b> ${baseToken.symbol || 'N/A'}
-<b>Mint Address:</b> <code>${tokenAddress}</code>
-
-🌐 <b>Blockchain:</b> Solana
-
-💲 <b>Price USD:</b> $${priceUsd}
-💧 <b>Liquidity USD:</b> $${liquidity}
-📈 <b>FDV:</b> $${fdv}
-📊 <b>Market Cap:</b> $${marketCap}
-🕒 <b>Creation Time:</b> ${creationTime}
-
-🔗 <b>DexScreener URL:</b> <a href="${dexUrl}">View on DexScreener</a>
-🔗 <b>SolScan URL:</b> <a href="https://solscan.io/token/${tokenAddress}">View on SolScan</a>
-
-💥 <i>This token has passed all your filters!</i>
-
-➡️ <b>Buying Token...</b>
-
-🔔 To listen for more tokens, use /start_listener.
-`;
-  } else {
-    // DexScreener does not have pairs data; fetch token metadata
-    const metadata = await fetchTokenMetadata(tokenAddress);
-    const name = metadata?.name || 'N/A';
-    const symbol = metadata?.symbol || 'N/A';
-
-    if (name === 'N/A' && symbol === 'N/A') {
-      // Both DexScreener and Metaplex failed to provide details
-      return `🚨 <b>Token Match Found!</b>
-
-<b>Mint Address:</b> <code>${tokenAddress}</code>
-
-🔗 <a href="https://solscan.io/token/${tokenAddress}">View on SolScan</a>
-
-💡 <i>Additional details are unavailable.</i>
-
-💰 <b>Buying Token...</b>
-
-🔔 To listen for more tokens, use /start_listener.
-`;
-    }
-
-    return `🚨 <b>Token Match Found!</b>
+  return `🚀 <b>🔥 New Token Alert!</b>
 
 <b>Token Name:</b> ${name}
 <b>Symbol:</b> ${symbol}
 <b>Mint Address:</b> <code>${tokenAddress}</code>
 
-🔗 <a href="https://solscan.io/token/${tokenAddress}">View on SolScan</a>
+🌐 <b>Chain:</b> ${chainId}
+💥 <b>Boost Amount:</b> ${boostAmount}
+📝 <b>Description:</b> ${description}
 
-💡 <i>Additional details are unavailable.</i>
+🔗 <b>DexScreener URL:</b> <a href="${url}">View Token</a>
+🔗 <b>SolScan URL:</b> <a href="https://solscan.io/token/${tokenAddress}">View on SolScan</a>
 
-💰 <b>Buying Token...</b>
+💥 <i>This token has passed all your filters and is fresh (&le;30 mins old)!</i>
+
+➡️ <b>Buying Token...</b>
 
 🔔 To listen for more tokens, use /start_listener.
 `;
+};
+
+/**
+ * Polling function that runs every 1 second to fetch from DexScreener and process tokens for active users
+ */
+const pollDexScreener = async () => {
+  if (isProcessing) {
+    logger.debug('Already processing. Skipping this tick.');
+    return;
+  }
+
+  if (activeUserIds.size === 0) {
+    logger.debug('No active users. Stopping polling.');
+    stopPolling();
+    return;
+  }
+
+  isProcessing = true;
+
+  try {
+    const boostedTokens = await fetchLatestBoostedTokens();
+    const users = Array.from(activeUserIds);
+
+    for (const uid of users) {
+      for (const dexToken of boostedTokens) {
+        const tokenAddress = dexToken.tokenAddress;
+
+        if (!isValidMint(tokenAddress)) {
+          logger.debug(`Invalid mint address: ${tokenAddress}, skipping.`);
+          continue;
+        }
+
+        if (dexToken.chainId.toLowerCase() !== 'solana') {
+          logger.debug(`Token ${tokenAddress} not on Solana chain, skipping.`);
+          continue;
+        }
+
+        const isYoung = await isTokenYoungerThan30Mins(tokenAddress);
+        logger.debug(`Token ${tokenAddress} is ${isYoung ? 'younger' : 'older'} than 30 minutes.`);
+        if (!isYoung) {
+          logger.debug(`Token ${tokenAddress} older than 30 mins or unknown creation time, skipping.`);
+          continue;
+        }
+
+        const tokenInfo: TokenInfo = { mintAddress: tokenAddress };
+        const passesFilters = await applyFilters(tokenInfo, uid, dexToken);
+        if (passesFilters) {
+          logger.info(`Token ${tokenAddress} passed filters for user ${uid}. Sending message and buying.`);
+          
+          const message = await constructTokenMessage(tokenInfo, dexToken);
+          await botInstance.api.sendMessage(uid, message, { parse_mode: 'HTML' });
+
+          const purchaseSuccess = await purchaseToken(uid, tokenInfo);
+
+          // Stop detection for this user after processing
+          activeUserIds.delete(uid);
+          if (purchaseSuccess) {
+            logger.info(`Listener stopped for user ${uid} after successful token purchase.`);
+          } else {
+            logger.info(`Listener stopped for user ${uid} after failed token purchase.`);
+          }
+        } else {
+          logger.debug(`Token ${tokenAddress} did not pass filters for user ${uid}.`);
+        }
+      }
+    }
+
+    // If no active users remain, stop polling
+    if (activeUserIds.size === 0) {
+      stopPolling();
+    }
+
+  } catch (error: any) {
+    logger.error(`Error in polling DexScreener: ${error.message}`, error);
+  } finally {
+    isProcessing = false;
+  }
+};
+
+const startPolling = () => {
+  if (intervalId === null) {
+    intervalId = setInterval(pollDexScreener, 1000);
+    logger.info('Started DexScreener polling at 1 second interval.');
+  } else {
+    logger.debug('Polling already started.');
+  }
+};
+
+const stopPolling = () => {
+  if (intervalId !== null) {
+    clearInterval(intervalId);
+    intervalId = null;
+    logger.info('Stopped DexScreener polling.');
   }
 };
 
 /**
- * Starts the token listener for a specific user.
+ * Starts the token listener for a specific user
  */
 export const startTokenListener = async (userId: number): Promise<void> => {
   if (activeUserIds.has(userId)) {
@@ -178,116 +283,11 @@ export const startTokenListener = async (userId: number): Promise<void> => {
   activeUserIds.add(userId);
   logger.info(`User ${userId} started token detection.`);
 
-  if (listenerId === null) {
-    listenerId = connection.onProgramAccountChange(
-      new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
-      async (keyedAccountInfo, context) => {
-        if (isProcessing) {
-          logger.debug('Listener is already processing an event. Skipping this event.');
-          return;
-        }
-
-        if (activeUserIds.size === 0) {
-          logger.debug('No active users. Listener should be stopped.');
-          return;
-        }
-
-        isProcessing = true; // Acquire the processing lock
-
-        try {
-          const accountId = keyedAccountInfo.accountId.toBase58();
-
-          // Validate mint address before processing
-          if (!isValidMint(accountId)) {
-            logger.warn(`Invalid mint address detected: ${accountId}. Skipping.`);
-            return;
-          }
-
-          const tokenInfo: TokenInfo = { mintAddress: accountId };
-          
-          // Create a snapshot of activeUserIds to allow safe removal during iteration
-          const users = Array.from(activeUserIds);
-
-          for (const uid of users) {
-            try {
-              const passesFilters = await applyFilters(tokenInfo, uid);
-              if (passesFilters) {
-                logger.info(
-                  `Token ${accountId} passed filters for user ${uid}. Fetching details and sending message.`
-                );
-
-                // Fetch detailed token information from DexScreener
-                const dexData = await fetchTokenDetails(accountId);
-
-                // Log DexScreener data for debugging
-                if (dexData) {
-                  logger.debug(
-                    `DexScreener Data for ${accountId}: ${JSON.stringify(
-                      dexData,
-                      null,
-                      2
-                    )}`
-                  );
-                }
-
-                // Construct the detailed message
-                const message = await constructTokenMessage(tokenInfo, dexData);
-
-                // Send the message to the user via Telegram
-                await botInstance.api.sendMessage(uid, message, { parse_mode: 'HTML' });
-
-                // Perform the token purchase
-                const purchaseSuccess = await purchaseToken(uid, tokenInfo);
-
-                // Stop the listener for this user regardless of purchase success
-                activeUserIds.delete(uid);
-                
-                if (purchaseSuccess) {
-                  logger.info(`Listener stopped for user ${uid} after successful token purchase.`);
-                } else {
-                  logger.info(`Listener stopped for user ${uid} after failed token purchase.`);
-                }
-
-                // Optionally, notify the user that the listener has been stopped
-                // await notifyUserById(uid, `🔔 Token detection has been stopped.`);
-              } else {
-                logger.debug(
-                  `Token ${accountId} did not pass filters for user ${uid}.`
-                );
-              }
-            } catch (error: any) {
-              logger.error(
-                `Error processing token ${accountId} for user ${uid}: ${error.message}`,
-                error
-              );
-            }
-          }
-
-          // After processing all users, check if listener should be removed
-          if (activeUserIds.size === 0 && listenerId !== null) {
-            try {
-              connection.removeProgramAccountChangeListener(listenerId);
-              logger.info('Solana token listener stopped as there are no active users.');
-              listenerId = null;
-            } catch (error: any) {
-              logger.error(`Error stopping token listener: ${error.message}`, error);
-            }
-          }
-        } catch (error: any) {
-          logger.error(`Unexpected error in listener callback: ${error.message}`, error);
-        } finally {
-          isProcessing = false; // Release the processing lock
-        }
-      },
-      'confirmed' // Ensure the commitment level is appropriate
-    );
-
-    logger.info('Solana token listener started.');
-  }
+  startPolling();
 };
 
 /**
- * Stops the token listener for a specific user.
+ * Stops the token listener for a specific user
  */
 export const stopTokenListener = async (userId: number): Promise<void> => {
   if (!activeUserIds.has(userId)) {
@@ -298,13 +298,7 @@ export const stopTokenListener = async (userId: number): Promise<void> => {
   activeUserIds.delete(userId);
   logger.info(`User ${userId} stopped token detection.`);
 
-  if (activeUserIds.size === 0 && listenerId !== null) {
-    try {
-      connection.removeProgramAccountChangeListener(listenerId);
-      logger.info('Solana token listener stopped.');
-      listenerId = null;
-    } catch (error: any) {
-      logger.error(`Error stopping token listener: ${error.message}`, error);
-    }
+  if (activeUserIds.size === 0) {
+    stopPolling();
   }
 };

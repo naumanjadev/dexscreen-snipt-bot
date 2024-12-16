@@ -15,7 +15,7 @@ import { logger } from '../utils/logger';
 
 // You can store multiple RPC URLs for load distribution
 const rpcUrls = [
-  'https://mainnet.helius-rpc.com/?api-key=34f4403f-f9da-4d03-a6df-3de140c97f06',
+  'https://mainnet.helius-rpc.com/?api-key=84ed7da1-c0cf-438b-81a0-fa94a72b89a4',
   // Add more RPC URLs if available for load balancing/failover
 ];
 

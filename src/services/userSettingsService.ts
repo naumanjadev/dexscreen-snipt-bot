@@ -1,5 +1,4 @@
 // src/services/userSettingsService.ts
-
 import { UserSettings, IUserSettings } from '../models/userSettings';
 
 /**

@@ -1,8 +1,10 @@
-// src/bot.ts
+// src/bots/telegramBot.ts
 
 import { Bot, session } from 'grammy';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { MyContext, SessionData } from '../types';
+
 import {
   handleWalletCommand,
   handleDeleteWalletCommand,
@@ -13,16 +15,15 @@ import {
   handleCancel,
   handleWithdrawAmountInput,
 } from '../controllers/walletController';
+
 import {
-  handleSetLiquidityCommand,
-  handleSetMintAuthorityCommand,
-  handleSetTopHoldersCommand,
+  handleSetBoostAmountCommand,
+  handleShowFiltersCommand,
   handleStartListenerCommand,
   handleStopListenerCommand,
-  handleShowFiltersCommand,
 } from '../controllers/filterController';
+
 import { PublicKey } from '@solana/web3.js';
-import { MyContext, SessionData } from '../types';
 
 // Define the session data structure
 type MySession = SessionData;
@@ -41,6 +42,19 @@ export const notifyUser = async (ctx: MyContext, message: string): Promise<void>
     await ctx.api.sendMessage(ctx.chat.id, message);
   } catch (error) {
     logger.error(`Error sending notification to user ${ctx.from?.id}:`, error);
+  }
+};
+
+/**
+ * Sends a notification to a user by their userId.
+ * @param userId - The Telegram user ID.
+ * @param message - The message to send.
+ */
+export const notifyUserById = async (userId: number, message: string): Promise<void> => {
+  try {
+    await botInstance.api.sendMessage(userId, message, { parse_mode: 'HTML' });
+  } catch (error) {
+    logger.error(`Error sending message to user ${userId}:`, error);
   }
 };
 
@@ -82,8 +96,8 @@ export const createBot = (): Bot<MyContext> => {
 
 Please choose an option:
 /wallet - Manage your Solana wallet
-/set_filters - Set token filters
-/show_filters - Show current filters
+/set_boost_amount - Set your boost amount filter
+/show_filters - Show current boost amount
 /start_listener - Start token detection
 /stop_listener - Stop token detection
 /help - Show available commands
@@ -98,8 +112,8 @@ Please choose an option:
 ❓ <b>Available Commands</b>
 /start - Start the bot and see options
 /wallet - Manage your Solana wallet
-/set_filters - Set token filters
-/show_filters - Show current filters
+/set_boost_amount - Set your boost amount filter
+/show_filters - Show current boost amount
 /start_listener - Start token detection
 /stop_listener - Stop token detection
 /delete_wallet - Delete your Solana wallet
@@ -116,29 +130,15 @@ Please choose an option:
   bot.command('cancel', handleCancel);
   bot.command('main_menu', handleMainMenuCommand);
 
-  // Filter commands with aliases
-  bot.command(['set_filters', 'setfilters'], async (ctx) => {
-    const message = `
-🔧 <b>Set Token Filters</b>
+  // Filter commands
+  bot.command('set_boost_amount', handleSetBoostAmountCommand);
+  bot.command('show_filters', handleShowFiltersCommand);
 
-Please choose a filter to set:
-/set_liquidity - Set liquidity threshold
-/set_mint_authority - Set mint authority requirement
-/set_top_holders - Set top holders concentration threshold
-    `;
-    await ctx.reply(message, { parse_mode: 'HTML' });
-  });
+  // Listener commands
+  bot.command('start_listener', handleStartListenerCommand);
+  bot.command('stop_listener', handleStopListenerCommand);
 
-  bot.command(['set_liquidity', 'setliquidity'], handleSetLiquidityCommand);
-  bot.command(['set_mint_authority', 'setmintauthority'], handleSetMintAuthorityCommand);
-  bot.command(['set_top_holders', 'settopholders'], handleSetTopHoldersCommand);
-  bot.command(['show_filters', 'showfilters'], handleShowFiltersCommand);
-
-  // Listener commands with aliases
-  bot.command(['start_listener', 'startlistener'], handleStartListenerCommand);
-  bot.command(['stop_listener', 'stoplistener'], handleStopListenerCommand);
-
-  // Handle text input for setting filters and confirmations
+  // Handle text input for setting boost amount and confirmations
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     if (text && text.startsWith('/')) {
@@ -149,12 +149,8 @@ Please choose a filter to set:
     const { awaitingInputFor, awaitingConfirmation } = ctx.session;
 
     if (awaitingInputFor || awaitingConfirmation) {
-      if (awaitingInputFor === 'set_liquidity') {
-        await handleSetLiquidityCommand(ctx);
-      } else if (awaitingInputFor === 'set_mint_authority') {
-        await handleSetMintAuthorityCommand(ctx);
-      } else if (awaitingInputFor === 'set_top_holders') {
-        await handleSetTopHoldersCommand(ctx);
+      if (awaitingInputFor === 'set_boost_amount') {
+        await handleSetBoostAmountCommand(ctx);
       } else if (awaitingInputFor === 'withdraw_address') {
         const input = ctx.message.text.trim();
         // Validate Solana address
@@ -216,13 +212,4 @@ Please choose a filter to set:
   return bot;
 };
 
-export const notifyUserById = async (userId: number, message: string): Promise<void> => {
-  try {
-    await botInstance.api.sendMessage(userId, message, { parse_mode: 'HTML' });
-  } catch (error) {
-    logger.error(`Error sending message to user ${userId}:`, error);
-  }
-};
-
-// Create and export the bot instance
 export const botInstance = createBot();
