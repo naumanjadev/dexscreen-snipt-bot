@@ -7,6 +7,7 @@ import { connection } from './solanaService';
 import { TokenInfo } from '../types';
 import { swapTokens } from './dexService'; // Adjust if necessary
 import { notifyUserById } from '../bots/telegramBot'; // Adjust the path as necessary
+import { getUserSettings } from './userSettingsService'; // Import getUserSettings
 
 /**
  * Delay execution for a specified number of milliseconds.
@@ -15,13 +16,23 @@ import { notifyUserById } from '../bots/telegramBot'; // Adjust the path as nece
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Purchases a token for the user using exactly 0.1 SOL if available.
+ * Purchases a token for the user using the user-defined amount of SOL.
  * @param userId - The unique identifier of the user.
  * @param tokenInfo - Information about the token to purchase.
  * @returns A boolean indicating whether the purchase was successful.
  */
 export const purchaseToken = async (userId: number, tokenInfo: TokenInfo): Promise<boolean> => {
   try {
+    // Retrieve user settings
+    const settings = await getUserSettings(userId);
+    const requiredSol = settings.buyamount;
+
+    if (requiredSol === null || requiredSol === undefined) {
+      logger.error(`User ${userId} has not set a purchase amount.`);
+      await notifyUserById(userId, `❌ Purchase amount not set. Please set your purchase amount using the bot settings.`);
+      return false;
+    }
+
     const userWallet = await getUserWallet(userId);
     if (!userWallet) {
       logger.error(`User wallet not found for user ${userId}. Cannot proceed with purchase.`);
@@ -32,8 +43,7 @@ export const purchaseToken = async (userId: number, tokenInfo: TokenInfo): Promi
     const fromKeypair = loadUserKeypair(userWallet.encryptedPrivateKey);
     const userBalance = await getUserBalance(fromKeypair.publicKey);
 
-    // Check if the user has at least 0.1 SOL
-    const requiredSol = 0.05;
+    // Check if the user has enough SOL
     if (userBalance < requiredSol) {
       logger.warn(`User ${userId} has insufficient balance (only ${userBalance.toFixed(4)} SOL) to purchase token ${tokenInfo.mintAddress}.`);
       await notifyUserById(
@@ -49,7 +59,7 @@ export const purchaseToken = async (userId: number, tokenInfo: TokenInfo): Promi
     // Wait 1 second before executing the purchase (as per the latest code snippet)
     await delay(1000);
 
-    const amountInLamports = Math.floor(requiredSol * 1e9);
+    const amountInLamports = Math.floor(requiredSol * 1e9); // Convert SOL to lamports
     const wsolMint = new PublicKey('So11111111111111111111111111111111111111112');
     const tokenMint = new PublicKey(tokenInfo.mintAddress);
 

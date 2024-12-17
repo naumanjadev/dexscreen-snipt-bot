@@ -37,6 +37,36 @@ export const handleSetBoostAmountCommand = async (ctx: MyContext): Promise<void>
   }
 };
 
+export const handleSetBuyAmountCommand = async (ctx: MyContext): Promise<void> => { 
+  if (!ctx.session.awaitingInputFor) {
+    await ctx.reply('Please enter the buy amount (or type "no buy"):');
+    ctx.session.awaitingInputFor = 'set_buy_amount';
+  } else {
+    const input = ctx.message?.text?.trim().toLowerCase();
+    const userId = ctx.from?.id;
+
+    if (!userId || input === undefined) {
+      await ctx.reply('Unable to process your request.');
+      ctx.session.awaitingInputFor = undefined;
+      return;
+    }
+
+    if (input === 'no buy') {
+      await updateUserSettings(userId, { buyamount: null });
+      await ctx.reply('Buy amount removed.');
+    } else {
+      const value = parseFloat(input);
+      if (isNaN(value) || value < 0) {
+        await ctx.reply('Please enter a valid number (non-negative).');
+        return;
+      }
+      await updateUserSettings(userId, { buyamount: value });
+      await ctx.reply(`Buy amount set to ${value} .`);
+    }
+    ctx.session.awaitingInputFor = undefined;
+  }
+}
+
 /**
  * Displays the current boost amount set by the user.
  * @param ctx - The context of the Telegram message.

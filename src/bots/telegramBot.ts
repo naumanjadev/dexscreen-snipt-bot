@@ -21,6 +21,7 @@ import {
   handleShowFiltersCommand,
   handleStartListenerCommand,
   handleStopListenerCommand,
+  handleSetBuyAmountCommand,
 } from '../controllers/filterController';
 
 import { PublicKey } from '@solana/web3.js';
@@ -71,7 +72,16 @@ export const createBot = (): Bot<MyContext> => {
   const bot = new Bot<MyContext>(config.telegramBotToken);
 
   // Initialize session middleware
-  bot.use(session({ initial: (): MySession => ({}) }));
+  bot.use(
+    session({
+      initial: (): MySession => ({
+        awaitingInputFor: undefined,
+        awaitingConfirmation: undefined,
+        withdrawAddress: undefined,
+        withdrawAmount: undefined,
+      }),
+    })
+  );
 
   // Middleware to reset session data when a new command is received
   bot.use(async (ctx, next) => {
@@ -97,7 +107,8 @@ export const createBot = (): Bot<MyContext> => {
 Please choose an option:
 /wallet - Manage your Solana wallet
 /set_boost_amount - Set your boost amount filter
-/show_filters - Show current boost amount
+/set_buy_amount - Set your buy amount filter
+/show_filters - Show current filters
 /start_listener - Start token detection
 /stop_listener - Stop token detection
 /help - Show available commands
@@ -113,7 +124,8 @@ Please choose an option:
 /start - Start the bot and see options
 /wallet - Manage your Solana wallet
 /set_boost_amount - Set your boost amount filter
-/show_filters - Show current boost amount
+/set_buy_amount - Set your buy amount filter
+/show_filters - Show current filters
 /start_listener - Start token detection
 /stop_listener - Stop token detection
 /delete_wallet - Delete your Solana wallet
@@ -132,13 +144,14 @@ Please choose an option:
 
   // Filter commands
   bot.command('set_boost_amount', handleSetBoostAmountCommand);
+  bot.command('set_buy_amount', handleSetBuyAmountCommand);
   bot.command('show_filters', handleShowFiltersCommand);
 
   // Listener commands
   bot.command('start_listener', handleStartListenerCommand);
   bot.command('stop_listener', handleStopListenerCommand);
 
-  // Handle text input for setting boost amount and confirmations
+  // Handle text input for setting boost amount, buy amount, and confirmations
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     if (text && text.startsWith('/')) {
@@ -151,6 +164,8 @@ Please choose an option:
     if (awaitingInputFor || awaitingConfirmation) {
       if (awaitingInputFor === 'set_boost_amount') {
         await handleSetBoostAmountCommand(ctx);
+      } else if (awaitingInputFor === 'set_buy_amount') {
+        await handleSetBuyAmountCommand(ctx);
       } else if (awaitingInputFor === 'withdraw_address') {
         const input = ctx.message.text.trim();
         // Validate Solana address

@@ -21,6 +21,7 @@ async function initiateTradingBot() {
       { command: 'start_listener', description: 'Start detecting new token issuances' },
       { command: 'stop_listener', description: 'Stop detecting new token issuances' },
       { command: 'set_boost_amount', description: 'Set your boost amount filter' },
+      { command: 'set_buy_amount', description: 'Set your buy amount filter' },
       { command: 'show_filters', description: 'Show current boost amount filter' },
       { command: 'help', description: 'Show available commands' },
     ])

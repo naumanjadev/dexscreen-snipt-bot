@@ -23,6 +23,15 @@ export const applyFilters = async (tokenInfo: TokenInfo, userId: number, dexData
       }
     }
 
+    if (settings.buyamount !== null) {
+      // Check buyamount against user-defined buyamount if provided
+      const tokenBuyAmount = dexData.totalAmount || 0;
+      if (tokenBuyAmount < settings.buyamount) {
+        logger.debug(`Token ${tokenInfo.mintAddress} failed buyamount filter for user ${userId}. Required: ${settings.buyamount}, got: ${tokenBuyAmount}`);
+        return false;
+      }
+    }
+
     logger.info(`Token ${tokenInfo.mintAddress} passed all filters for user ${userId}.`);
     return true;
   } catch (error) {
