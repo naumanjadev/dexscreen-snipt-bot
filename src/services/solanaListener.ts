@@ -296,7 +296,7 @@ const pollDexScreener = async () => {
 
 const startPolling = () => {
   if (intervalId === null) {
-    intervalId = setInterval(pollDexScreener, 1000); // 5 seconds interval
+    intervalId = setInterval(pollDexScreener, 3000); // 5 seconds interval
     logger.info('Started DexScreener polling at 5 second interval.');
   } else {
     logger.debug('Polling already started.');
