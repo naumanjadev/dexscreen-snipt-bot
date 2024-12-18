@@ -20,40 +20,15 @@ interface DexScreenerBoostedToken {
   url: string;
   totalAmount: number;
   description: string;
+  // Add other relevant fields as per DexScreener API response
 }
 
 interface DexScreenerPairResponse {
   pairs: Array<{
-    pairCreatedAt: number;
+    pairCreatedAt: number; // Unix timestamp in seconds or milliseconds
+    // Add other relevant fields as per DexScreener API response
   }>;
 }
-
-// Delay function for waiting
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-// Generic fetch with retry and exponential backoff
-const fetchWithRetry = async <T>(
-  fetchFn: () => Promise<T>, 
-  maxRetries = 3
-): Promise<T | null> => {
-  let retries = 0;
-  while (retries < maxRetries) {
-    try {
-      return await fetchFn();
-    } catch (error: any) {
-      if (error.response && error.response.status === 429) {
-        const waitTime = Math.pow(2, retries) * 1000; // Exponential backoff
-        logger.warn(`Rate limited. Waiting ${waitTime}ms before retry.`);
-        await delay(waitTime);
-        retries++;
-      } else {
-        throw error;
-      }
-    }
-  }
-  logger.error('Max retries reached');
-  return null;
-};
 
 // Validate Mint Address
 const isValidMint = (address: string): boolean => {
@@ -72,15 +47,12 @@ const activeUserIds: Set<number> = new Set();
 let isProcessing: boolean = false; 
 let intervalId: NodeJS.Timeout | null = null;
 
-// **Optional Enhancement: Track Processed Tokens per User**
-const userProcessedTokens: Map<number, Set<string>> = new Map();
-
 /**
  * Fetch the latest boosted tokens from DexScreener.
  * @returns Array of boosted token objects or empty array on failure.
  */
 const fetchLatestBoostedTokens = async (): Promise<DexScreenerBoostedToken[]> => {
-  const result = await fetchWithRetry(async () => {
+  try {
     const response = await axios.get(DEXSCREENER_BOOSTS_URL);
     if (response.status === 200 && response.data) {
       const data: DexScreenerBoostedToken[] = Array.isArray(response.data) ? response.data : [response.data];
@@ -89,10 +61,13 @@ const fetchLatestBoostedTokens = async (): Promise<DexScreenerBoostedToken[]> =>
       );
       return data;
     } else {
-      throw new Error(`Failed to fetch boosted tokens. Status: ${response.status}`);
+      logger.error(`Failed to fetch boosted tokens. Status: ${response.status}`);
+      return [];
     }
-  });
-  return result || [];
+  } catch (error: any) {
+    logger.error(`Error fetching latest boosted tokens: ${error.message}`, error);
+    return [];
+  }
 };
 
 /**
@@ -101,15 +76,17 @@ const fetchLatestBoostedTokens = async (): Promise<DexScreenerBoostedToken[]> =>
  * @returns Token pair creation timestamp in seconds or milliseconds
  */
 const fetchTokenCreationTime = async (tokenAddress: string): Promise<{ timestamp: number, unit: 'seconds' | 'milliseconds' } | null> => {
-  return fetchWithRetry(async () => {
+  try {
     const response = await axios.get<DexScreenerPairResponse>(`${DEXSCREENER_PAIR_TOKEN_URL}${tokenAddress}`);
     if (response.status === 200 && response.data?.pairs?.length > 0) {
       const pair = response.data.pairs[0];
       const pairCreatedAt = pair.pairCreatedAt;
       
       if (pairCreatedAt) {
+        // Log the raw pairCreatedAt value
         logger.debug(`Token ${tokenAddress} pairCreatedAt raw value: ${pairCreatedAt}`);
         
+        // Determine the unit based on the length of the timestamp
         let unit: 'seconds' | 'milliseconds';
         if (pairCreatedAt.toString().length === 10) {
           unit = 'seconds';
@@ -129,7 +106,10 @@ const fetchTokenCreationTime = async (tokenAddress: string): Promise<{ timestamp
       logger.warn(`No pairs found for token ${tokenAddress}`);
     }
     return null;
-  }) || null;
+  } catch (error: any) {
+    logger.error(`Error fetching token creation time for ${tokenAddress}: ${error.message}`, error);
+    return null;
+  }
 };
 
 /**
@@ -198,7 +178,7 @@ const constructTokenMessage = async (
 };
 
 /**
- * Polling function that runs every 5 seconds to fetch from DexScreener and process tokens for active users
+ * Polling function that runs every 1 second to fetch from DexScreener and process tokens for active users
  */
 const pollDexScreener = async () => {
   if (isProcessing) {
@@ -215,21 +195,12 @@ const pollDexScreener = async () => {
   isProcessing = true;
 
   try {
-    // Add a deliberate delay before making API calls
-    await delay(1000); // 2-second delay between polls
-
     const boostedTokens = await fetchLatestBoostedTokens();
     const users = Array.from(activeUserIds);
 
     for (const uid of users) {
       for (const dexToken of boostedTokens) {
         const tokenAddress = dexToken.tokenAddress;
-
-        // **Optional Enhancement: Skip already processed tokens for this user**
-        if (userProcessedTokens.has(uid) && userProcessedTokens.get(uid)!.has(tokenAddress)) {
-          logger.debug(`Token ${tokenAddress} already processed for user ${uid}, skipping.`);
-          continue;
-        }
 
         if (!isValidMint(tokenAddress)) {
           logger.debug(`Invalid mint address: ${tokenAddress}, skipping.`);
@@ -252,30 +223,34 @@ const pollDexScreener = async () => {
         const passesFilters = await applyFilters(tokenInfo, uid, dexToken);
         if (passesFilters) {
           logger.info(`Token ${tokenAddress} passed filters for user ${uid}. Sending message and buying.`);
-
+          
           const message = await constructTokenMessage(tokenInfo, dexToken);
-          await botInstance.api.sendMessage(uid, message, { parse_mode: 'HTML' });
-
-          let purchaseSuccess = false;
           try {
-            purchaseSuccess = await purchaseToken(uid, tokenInfo);
+            await botInstance.api.sendMessage(uid, message, { parse_mode: 'HTML' });
+            logger.debug(`Message sent to user ${uid} for token ${tokenAddress}.`);
+          } catch (msgError: any) {
+            logger.error(`Failed to send message to user ${uid}: ${msgError.message}`, msgError);
+          }
+
+          try {
+            const purchaseSuccess = await purchaseToken(uid, tokenInfo);
+            if (purchaseSuccess) {
+              logger.info(`Successfully purchased token ${tokenAddress} for user ${uid}.`);
+            } else {
+              logger.warn(`Failed to purchase token ${tokenAddress} for user ${uid}.`);
+            }
           } catch (purchaseError: any) {
-            logger.error(`Purchase attempt failed for token ${tokenAddress} and user ${uid}: ${purchaseError.message}`, purchaseError);
+            logger.error(`Error purchasing token ${tokenAddress} for user ${uid}: ${purchaseError.message}`, purchaseError);
           }
 
-          // **Do not remove the user from activeUserIds to keep listening**
+          // Do NOT remove the user from activeUserIds to keep listening
+          // activeUserIds.delete(uid);
+          // if (purchaseSuccess) {
+          //   logger.info(`Listener stopped for user ${uid} after successful token purchase.`);
+          // } else {
+          //   logger.info(`Listener stopped for user ${uid} after failed token purchase.`);
+          // }
 
-          if (purchaseSuccess) {
-            logger.info(`Successfully purchased token ${tokenAddress} for user ${uid}.`);
-          } else {
-            logger.info(`Failed to purchase token ${tokenAddress} for user ${uid}.`);
-          }
-
-          // **Mark the token as processed for this user to prevent repeated attempts**
-          if (!userProcessedTokens.has(uid)) {
-            userProcessedTokens.set(uid, new Set());
-          }
-          userProcessedTokens.get(uid)!.add(tokenAddress);
         } else {
           logger.debug(`Token ${tokenAddress} did not pass filters for user ${uid}.`);
         }
@@ -296,8 +271,8 @@ const pollDexScreener = async () => {
 
 const startPolling = () => {
   if (intervalId === null) {
-    intervalId = setInterval(pollDexScreener, 3000); // 5 seconds interval
-    logger.info('Started DexScreener polling at 5 second interval.');
+    intervalId = setInterval(pollDexScreener, 1000);
+    logger.info('Started DexScreener polling at 1 second interval.');
   } else {
     logger.debug('Polling already started.');
   }
@@ -337,9 +312,6 @@ export const stopTokenListener = async (userId: number): Promise<void> => {
 
   activeUserIds.delete(userId);
   logger.info(`User ${userId} stopped token detection.`);
-
-  // **Optional Enhancement: Remove processed tokens for this user**
-  userProcessedTokens.delete(userId);
 
   if (activeUserIds.size === 0) {
     stopPolling();
