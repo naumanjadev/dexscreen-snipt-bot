@@ -8,12 +8,6 @@ import { notifyUserById } from '../bots/telegramBot';
 import { getUserSettings } from './userSettingsService';
 
 /**
- * Delay execution for a specified number of milliseconds.
- * @param ms The number of milliseconds to delay.
- */
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
  * Validate a given token mint address.
  * @param mintAddress - The token mint address to validate.
  * @returns True if valid, false otherwise.
@@ -89,9 +83,6 @@ export const purchaseToken = async (userId: number, tokenInfo: TokenInfo): Promi
       `🎉 Token Matched: ${tokenInfo.mintAddress}\nPreparing to buy token with ${requiredSol} SOL...`
     );
 
-    // Wait 1 second before executing the purchase
-    await delay(1000);
-
     const amountInLamports = Math.floor(requiredSol * 1e9); // Convert SOL to lamports
     const wsolMint = new PublicKey('So11111111111111111111111111111111111111112');
     const tokenMint = new PublicKey(tokenInfo.mintAddress);
@@ -110,7 +101,7 @@ export const purchaseToken = async (userId: number, tokenInfo: TokenInfo): Promi
         userId,
         `✅ Successfully purchased token ${tokenInfo.mintAddress} using ${requiredSol.toFixed(4)} SOL!`
       );
-      await notifyUserById(userId, `📡 Token detection has been stopped after your purchase.`);
+      // No longer stopping the listener; user continues listening.
       return true;
     } else {
       logger.error(`Failed to purchase token ${tokenInfo.mintAddress} for user ${userId}.`);

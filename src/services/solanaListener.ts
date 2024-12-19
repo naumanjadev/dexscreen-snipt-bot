@@ -1,5 +1,3 @@
-// src/services/solanaService.ts
-
 import { Connection, PublicKey } from '@solana/web3.js';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -202,8 +200,7 @@ const pollDexScreener = async () => {
     // Get the active users
     const userIds = Array.from(activeUserIds);
 
-    // Apply user filters (which do not rely on creation time) for each user
-    // We do this in parallel for each token to minimize delay
+    // Apply user filters (which do not rely on creation time)
     // We'll store results in a map of userId -> tokens that pass filters
     const userTokensMap: Record<number, DexScreenerBoostedToken[]> = {};
     for (const uid of userIds) {
@@ -212,7 +209,6 @@ const pollDexScreener = async () => {
 
     for (const dexToken of filteredTokens) {
       const tokenInfo: TokenInfo = { mintAddress: dexToken.tokenAddress };
-      // Apply filters for all users in parallel
       const filterChecks = await Promise.all(userIds.map(uid => applyFilters(tokenInfo, uid, dexToken)));
       filterChecks.forEach((passes, index) => {
         if (passes) {
@@ -220,8 +216,7 @@ const pollDexScreener = async () => {
         }
       });
 
-      // If at least one user found it passing filters, we keep it for creation check
-      // Otherwise mark it processed now
+      // If no user passed filters, mark token as processed now
       if (!filterChecks.includes(true)) {
         processedTokens.add(dexToken.tokenAddress);
       }
@@ -248,43 +243,54 @@ const pollDexScreener = async () => {
       creationTimeMap[tokenAddress] = creationData;
     }
 
-    // Now, for each user and token, check creation time and send messages/purchase if valid
-    // We'll do these actions in parallel per user
-    for (const uid of userIds) {
-      const tokensForUser = userTokensMap[uid];
-      // Filter tokens that are actually younger than 30 mins
-      const validTokensForUser = tokensForUser.filter(dexToken => 
-        isTokenYoungerThan30Mins(creationTimeMap[dexToken.tokenAddress] || null)
-      );
+    // Process tokens for each user who passed filters
+    for (const tokenAddress of uniqueTokensToCheck) {
+      const creationData = creationTimeMap[tokenAddress];
+      if (!isTokenYoungerThan30Mins(creationData)) {
+        // Not new enough or invalid creation data
+        processedTokens.add(tokenAddress);
+        continue;
+      }
 
-      // Send messages and attempt purchase in parallel for speed
-      await Promise.all(validTokensForUser.map(async dexToken => {
-        const tokenInfo: TokenInfo = { mintAddress: dexToken.tokenAddress };
-        
-        // Construct and send message
-        const message = await constructTokenMessage(tokenInfo, dexToken);
+      // Token is valid and fresh, attempt purchase for ALL users that passed the filters
+      // Since user wants continuous buying, we won't stop after first user.
+      // We'll still ensure we only "process" each token once. 
+      // Once we start buying for users, we mark it processed.
+      processedTokens.add(tokenAddress);
+
+      // Find all users who had this token pass filters
+      const usersForToken = userIds.filter(uid => userTokensMap[uid].some(t => t.tokenAddress === tokenAddress));
+
+      if (usersForToken.length === 0) {
+        continue;
+      }
+
+      // Construct message once
+      const dexToken = userTokensMap[usersForToken[0]].find(t => t.tokenAddress === tokenAddress)!;
+      const tokenInfo: TokenInfo = { mintAddress: tokenAddress };
+      const message = await constructTokenMessage(tokenInfo, dexToken);
+
+      // For each user that passed filters, send message and buy
+      for (const uid of usersForToken) {
         try {
           await botInstance.api.sendMessage(uid, message, { parse_mode: 'HTML' });
-          logger.debug(`Message sent to user ${uid} for token ${dexToken.tokenAddress}.`);
+          logger.debug(`Message sent to user ${uid} for token ${tokenAddress}.`);
         } catch (msgError: any) {
           logger.error(`Failed to send message to user ${uid}: ${msgError.message}`, msgError);
         }
 
-        // Attempt purchase
+        // Attempt purchase for this user
         try {
           const purchaseSuccess = await purchaseToken(uid, tokenInfo);
           if (purchaseSuccess) {
-            logger.info(`Successfully purchased token ${dexToken.tokenAddress} for user ${uid}.`);
+            logger.info(`Successfully purchased token ${tokenAddress} for user ${uid}.`);
           } else {
-            logger.warn(`Failed to purchase token ${dexToken.tokenAddress} for user ${uid}.`);
+            logger.warn(`Failed to purchase token ${tokenAddress} for user ${uid}.`);
           }
         } catch (purchaseError: any) {
-          logger.error(`Error purchasing token ${dexToken.tokenAddress} for user ${uid}: ${purchaseError.message}`, purchaseError);
+          logger.error(`Error purchasing token ${tokenAddress} for user ${uid}: ${purchaseError.message}`, purchaseError);
         }
-
-        // Mark token as processed to prevent immediate reprocessing
-        processedTokens.add(dexToken.tokenAddress);
-      }));
+      }
     }
 
     // If no active users remain, stop polling
