@@ -1,19 +1,31 @@
-// src/services/purchaseService.ts
-
 import { PublicKey } from '@solana/web3.js';
 import { loadUserKeypair, getUserWallet, getUserBalance } from './walletService';
 import { logger } from '../utils/logger';
 import { connection } from './solanaService';
 import { TokenInfo } from '../types';
-import { swapTokens } from './dexService'; // Adjust if necessary
-import { notifyUserById } from '../bots/telegramBot'; // Adjust the path as necessary
-import { getUserSettings } from './userSettingsService'; // Import getUserSettings
+import { swapTokens } from './dexService'; 
+import { notifyUserById } from '../bots/telegramBot'; 
+import { getUserSettings } from './userSettingsService';
 
 /**
  * Delay execution for a specified number of milliseconds.
  * @param ms The number of milliseconds to delay.
  */
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Validate a given token mint address.
+ * @param mintAddress - The token mint address to validate.
+ * @returns True if valid, false otherwise.
+ */
+const isValidMintAddress = (mintAddress: string): boolean => {
+  try {
+    new PublicKey(mintAddress);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 /**
  * Purchases a token for the user using the user-defined amount of SOL.
@@ -29,14 +41,30 @@ export const purchaseToken = async (userId: number, tokenInfo: TokenInfo): Promi
 
     if (requiredSol === null || requiredSol === undefined) {
       logger.error(`User ${userId} has not set a purchase amount.`);
-      await notifyUserById(userId, `❌ Purchase amount not set. Please set your purchase amount using the bot settings.`);
+      await notifyUserById(
+        userId,
+        `❌ Purchase amount not set. Please set your purchase amount using the bot settings.`
+      );
       return false;
     }
 
     const userWallet = await getUserWallet(userId);
     if (!userWallet) {
       logger.error(`User wallet not found for user ${userId}. Cannot proceed with purchase.`);
-      await notifyUserById(userId, `❌ Wallet not found. Please set up your wallet before purchasing tokens.`);
+      await notifyUserById(
+        userId,
+        `❌ Wallet not found. Please set up your wallet before purchasing tokens.`
+      );
+      return false;
+    }
+
+    // Validate the token's mint address
+    if (!isValidMintAddress(tokenInfo.mintAddress)) {
+      logger.error(`Invalid token mint address provided: ${tokenInfo.mintAddress}`);
+      await notifyUserById(
+        userId,
+        `❌ Invalid token mint address detected. Cannot proceed with the purchase.`
+      );
       return false;
     }
 
@@ -45,18 +73,23 @@ export const purchaseToken = async (userId: number, tokenInfo: TokenInfo): Promi
 
     // Check if the user has enough SOL
     if (userBalance < requiredSol) {
-      logger.warn(`User ${userId} has insufficient balance (only ${userBalance.toFixed(4)} SOL) to purchase token ${tokenInfo.mintAddress}.`);
+      logger.warn(
+        `User ${userId} has insufficient balance (only ${userBalance.toFixed(4)} SOL) to purchase token ${tokenInfo.mintAddress}.`
+      );
       await notifyUserById(
-        userId, 
+        userId,
         `❌ You need at least ${requiredSol} SOL to purchase this token. Current balance: ${userBalance.toFixed(4)} SOL`
       );
       return false;
     }
 
     // Notify user that a matching token was found
-    await notifyUserById(userId, `🎉 Token Matched: ${tokenInfo.mintAddress}\nPreparing to buy token with ${requiredSol} SOL...`);
+    await notifyUserById(
+      userId,
+      `🎉 Token Matched: ${tokenInfo.mintAddress}\nPreparing to buy token with ${requiredSol} SOL...`
+    );
 
-    // Wait 1 second before executing the purchase (as per the latest code snippet)
+    // Wait 1 second before executing the purchase
     await delay(1000);
 
     const amountInLamports = Math.floor(requiredSol * 1e9); // Convert SOL to lamports
@@ -81,12 +114,18 @@ export const purchaseToken = async (userId: number, tokenInfo: TokenInfo): Promi
       return true;
     } else {
       logger.error(`Failed to purchase token ${tokenInfo.mintAddress} for user ${userId}.`);
-      await notifyUserById(userId, `❌ Failed to purchase token ${tokenInfo.mintAddress}. Please try again later.`);
+      await notifyUserById(
+        userId,
+        `❌ Failed to purchase token ${tokenInfo.mintAddress}. Please try again later.`
+      );
       return false;
     }
   } catch (error: any) {
     logger.error(`Failed to purchase token ${tokenInfo.mintAddress} for user ${userId}:`, error);
-    await notifyUserById(userId, `❌ An error occurred while purchasing token ${tokenInfo.mintAddress}.`);
+    await notifyUserById(
+      userId,
+      `❌ An error occurred while purchasing token ${tokenInfo.mintAddress}.`
+    );
     return false;
   }
 };
