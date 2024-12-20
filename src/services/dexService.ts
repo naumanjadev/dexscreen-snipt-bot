@@ -104,7 +104,7 @@ export const swapTokens = async (params: {
         wrapAndUnwrapSol: true,
         dynamicComputeUnitLimit: true,
         dynamicSlippage: {
-          maxBps: 300 // maximum slippage bps set to prevent MEV or too large slippage
+          maxBps: 4000 // maximum slippage bps set to 40% to allow higher slippage
         },
         prioritizationFeeLamports: {
           priorityLevelWithMaxLamports: {
