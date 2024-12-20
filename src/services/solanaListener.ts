@@ -115,7 +115,7 @@ const isTokenYoungerThan30Mins = (creationData: { timestamp: number, unit: 'seco
   const diff = currentTime - creationTimeInSeconds; 
   logger.debug(`Token age: ${diff} seconds`);
 
-  return diff >= 0 && diff <= 1800; 
+  return diff >= 0 && diff <= 3600; 
 };
 
 const constructTokenMessage = async (
