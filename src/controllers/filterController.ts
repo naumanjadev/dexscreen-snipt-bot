@@ -255,9 +255,9 @@ Configure your smart listener with the following commands:
 
 <b>Notification Settings:</b>
 /smart_settings notify [important_only/trade_signals] - Set notification mode
-/smart_settings msg_lifetime [value] - Set message lifetime in seconds (0 = never delete)
 /smart_settings compact [on/off] - Enable/disable compact notification format
 /smart_settings mute [on/off] - Mute non-critical notifications
+<i>Note: All messages will be automatically deleted after 2 seconds</i>
 
 Example: /smart_settings profit 50
 `;
@@ -281,7 +281,7 @@ Example: /smart_settings profit 50
 
 <b>Notification Settings:</b>
 • Mode: ${settings.notificationMode === 'important_only' ? 'IMPORTANT ONLY' : 'TRADE SIGNALS'}
-• Message Lifetime: ${settings.notificationMessageLifetime ? settings.notificationMessageLifetime / 1000 + 's' : 'Never delete'}
+• Message Lifetime: 2 seconds (auto-delete)
 • Compact Mode: ${settings.compactMode ? 'ON' : 'OFF'}
 • Mute Non-Critical: ${settings.muteNonCritical ? 'ON' : 'OFF'}
 `;
@@ -394,15 +394,9 @@ Example: /smart_settings profit 50
         break;
       
       case 'msg_lifetime':
-        const msgLifetime = parseInt(value);
-        if (isNaN(msgLifetime) || msgLifetime < 0) {
-          await ctx.reply('❌ Message lifetime must be a non-negative number');
-          return;
-        }
-        updateSmartListenerSettings(userId, { 
-          notificationMessageLifetime: msgLifetime === 0 ? 0 : msgLifetime * 1000 
-        });
-        await ctx.reply(`✅ Message lifetime set to ${msgLifetime === 0 ? 'never delete' : msgLifetime + ' seconds'}`);
+        // Force 2-second message lifetime regardless of user input
+        updateSmartListenerSettings(userId, { notificationMessageLifetime: 2000 });
+        await ctx.reply(`✅ All messages will be automatically deleted after 2 seconds.`);
         break;
       
       case 'compact':

@@ -657,6 +657,17 @@ ${tokenEmoji}<b>${tokenName} (${tokenSymbol})</b>
             const initialMessageId = await notifyUserById(userId, initMessage);
             userListener.lastMessageId = initialMessageId || null;
             userListener.lastNotificationTime = Date.now(); // Update last notification time
+            
+            // Always delete message after 2 seconds
+            if (initialMessageId) {
+              setTimeout(async () => {
+                await deleteMessageById(userId, initialMessageId);
+                // Only clear lastMessageId if it's still the same message
+                if (userListener?.lastMessageId === initialMessageId) {
+                  userListener.lastMessageId = null;
+                }
+              }, 2000);
+            }
           } else if (userListener.notificationMode === 'trade_signals') {
             // For trade_signals mode, only send a minimal initialization message
             const tradeSignalInit = `
@@ -670,6 +681,17 @@ ${tokenEmoji}<b>${tokenName} (${tokenSymbol})</b>
             const initialMessageId = await notifyUserById(userId, tradeSignalInit);
             userListener.lastMessageId = initialMessageId || null;
             userListener.lastNotificationTime = Date.now(); // Update last notification time
+            
+            // Always delete message after 2 seconds
+            if (initialMessageId) {
+              setTimeout(async () => {
+                await deleteMessageById(userId, initialMessageId);
+                // Only clear lastMessageId if it's still the same message
+                if (userListener?.lastMessageId === initialMessageId) {
+                  userListener.lastMessageId = null;
+                }
+              }, 2000);
+            }
           } else {
             // Add to batch for any other mode
             addNotificationToBatch(userId, tokenAddress, tokenName, tokenSymbol, initMessage, 'high');
@@ -945,14 +967,15 @@ Price has dropped ${Math.abs(priceChangeFromHighest).toFixed(2)}% from peak!
               userListener.lastMessageId = messageId || null;
               userListener.lastNotificationTime = Date.now(); // Update last notification time
               
-              // If message lifetime is set, schedule deletion
-              if (userListener.notificationMessageLifetime > 0 && messageId) {
+              // Always delete message after 2 seconds
+              if (messageId) {
                 setTimeout(async () => {
+                  await deleteMessageById(userId, messageId);
+                  // Only clear lastMessageId if it's still the same message
                   if (userListener && userListener.lastMessageId === messageId) {
-                    await deleteMessageById(userId, messageId);
                     userListener.lastMessageId = null;
                   }
-                }, userListener.notificationMessageLifetime);
+                }, 2000);
               }
             }
           } else if (userListener.notificationMode === 'trade_signals') {
@@ -970,14 +993,15 @@ Price has dropped ${Math.abs(priceChangeFromHighest).toFixed(2)}% from peak!
               userListener.lastMessageId = messageId || null;
               userListener.lastNotificationTime = Date.now(); // Update last notification time
               
-              // If message lifetime is set, schedule deletion
-              if (userListener.notificationMessageLifetime > 0 && messageId) {
+              // Always delete message after 2 seconds
+              if (messageId) {
                 setTimeout(async () => {
+                  await deleteMessageById(userId, messageId);
+                  // Only clear lastMessageId if it's still the same message
                   if (userListener && userListener.lastMessageId === messageId) {
-                    await deleteMessageById(userId, messageId);
                     userListener.lastMessageId = null;
                   }
-                }, userListener.notificationMessageLifetime);
+                }, 2000);
               }
             }
           } else {
@@ -1022,11 +1046,11 @@ export const startSmartListener = async (userId: number): Promise<void> => {
     autoSellEnabled: false,
     monitorMultipleTokens: false,
     // Notification settings with defaults
-    notificationMode: 'important_only',
+    notificationMode: 'important_only', // Default to important_only
     notificationInterval: 60000, // Default: batch every 1 minute if batched mode is used
     notificationBatchIntervalId: null,
     batchedNotifications: [],
-    notificationMessageLifetime: 30000, // Default: messages stay for 30 seconds
+    notificationMessageLifetime: 2000, // 2 seconds message lifetime
     muteNonCritical: false,
     lastNotificationTime: 0,
     compactMode: false
@@ -1155,6 +1179,17 @@ ${tokenEmoji}<b>${tokenName} (${tokenSymbol})</b>
       
       userListener.lastMessageId = selectionMsgId || null;
       
+      // Delete message after 2 seconds
+      if (selectionMsgId) {
+        setTimeout(async () => {
+          await deleteMessageById(userId, selectionMsgId);
+          // Only clear lastMessageId if it's still the same message
+          if (userListener?.lastMessageId === selectionMsgId) {
+            userListener.lastMessageId = null;
+          }
+        }, 2000);
+      }
+      
       // Start monitoring the token price
       await monitorTokenPrice(userId, firstToken.tokenAddress);
     }
@@ -1246,7 +1281,7 @@ export const getSmartListenerSettings = (userId: number): {
     monitorMultipleTokens: false,
     notificationMode: 'important_only',
     notificationInterval: 60000,
-    notificationMessageLifetime: 30000,
+    notificationMessageLifetime: 2000, // 2 seconds message lifetime
     muteNonCritical: false,
     compactMode: false
   };
@@ -1296,7 +1331,7 @@ export const updateSmartListenerSettings = (userId: number, settings: Partial<{
       notificationInterval: 60000,
       notificationBatchIntervalId: null,
       batchedNotifications: [],
-      notificationMessageLifetime: 30000,
+      notificationMessageLifetime: 2000,
       muteNonCritical: false,
       lastNotificationTime: 0,
       compactMode: false
@@ -1719,17 +1754,15 @@ ${relevantNotifications.map(n => n.message).join('\n\n---\n\n')}
       userListener.lastMessageId = messageId || null;
       userListener.lastNotificationTime = Date.now(); // Update last notification time
       
-      // If we have a message lifetime, schedule it for deletion
-      if (userListener.notificationMessageLifetime > 0) {
-        if (messageId) {
-          setTimeout(async () => {
-            // Only delete if this is still the last message (to avoid race conditions)
-            if (userListener && userListener.lastMessageId === messageId) {
-              await deleteMessageById(userId, messageId);
-              userListener.lastMessageId = null;
-            }
-          }, userListener.notificationMessageLifetime);
-        }
+      // Always delete message after 2 seconds
+      if (messageId) {
+        setTimeout(async () => {
+          await deleteMessageById(userId, messageId);
+          // Only clear lastMessageId if it's still the same message
+          if (userListener && userListener.lastMessageId === messageId) {
+            userListener.lastMessageId = null;
+          }
+        }, 2000);
       }
     }
     
