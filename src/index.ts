@@ -20,6 +20,8 @@ async function initiateTradingBot() {
       { command: 'wallet', description: 'Manage your Solana wallet' },
       { command: 'start_listener', description: 'Start detecting new token issuances' },
       { command: 'stop_listener', description: 'Stop detecting new token issuances' },
+      { command: 'smart_listener', description: 'Start smart token detection and price monitoring' },
+      { command: 'stop_smart_listener', description: 'Stop smart token detection and price monitoring' },
       { command: 'set_boost_amount', description: 'Set your boost amount filter' },
       { command: 'set_buy_amount', description: 'Set your buy amount filter' },
       { command: 'show_filters', description: 'Show current boost amount filter' },

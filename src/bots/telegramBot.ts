@@ -22,6 +22,10 @@ import {
   handleStartListenerCommand,
   handleStopListenerCommand,
   handleSetBuyAmountCommand,
+  handleSmartListenerCommand,
+  handleStopSmartListenerCommand,
+  handleSmartListenerSettingsCommand,
+  handleViewAnalyticsCommand,
 } from '../controllers/filterController';
 
 import { PublicKey } from '@solana/web3.js';
@@ -50,12 +54,68 @@ export const notifyUser = async (ctx: MyContext, message: string): Promise<void>
  * Sends a notification to a user by their userId.
  * @param userId - The Telegram user ID.
  * @param message - The message to send.
+ * @returns The message ID if successful, undefined otherwise.
  */
-export const notifyUserById = async (userId: number, message: string): Promise<void> => {
+export const notifyUserById = async (userId: number, message: string): Promise<number | undefined> => {
+  const MAX_RETRIES = 3;
+  let retryCount = 0;
+  
+  while (retryCount < MAX_RETRIES) {
+    try {
+      const sentMessage = await botInstance.api.sendMessage(userId, message, { parse_mode: 'HTML' });
+      return sentMessage.message_id; // Return the message ID
+    } catch (error: any) {
+      retryCount++;
+      
+      // Check if it's a network error
+      const isNetworkError = error.message && 
+        (error.message.includes('Network request') || 
+         error.message.includes('ETIMEDOUT') ||
+         error.message.includes('ECONNRESET') ||
+         error.message.includes('socket hang up'));
+      
+      if (isNetworkError && retryCount < MAX_RETRIES) {
+        // For network errors, wait and retry
+        logger.warn(`Network error sending message to user ${userId}, retry ${retryCount}/${MAX_RETRIES}`);
+        await new Promise(resolve => setTimeout(resolve, 1000 * retryCount)); // Exponential backoff
+        continue;
+      }
+      
+      // If we've reached max retries or it's not a network error, log and return
+      if (retryCount === MAX_RETRIES) {
+        logger.error(`Failed to send message after ${MAX_RETRIES} attempts to user ${userId}: ${error.message}`);
+      } else {
+        logger.error(`Error sending message to user ${userId}: ${error.message}`);
+      }
+      
+      return undefined;
+    }
+  }
+  
+  return undefined;
+};
+
+/**
+ * Deletes a message by its ID for a specific user.
+ * @param userId - The Telegram user ID.
+ * @param messageId - The ID of the message to delete.
+ */
+export const deleteMessageById = async (userId: number, messageId: number): Promise<void> => {
   try {
-    await botInstance.api.sendMessage(userId, message, { parse_mode: 'HTML' });
-  } catch (error) {
-    logger.error(`Error sending message to user ${userId}:`, error);
+    await botInstance.api.deleteMessage(userId, messageId);
+  } catch (error: any) {
+    // Check if the error is because the message was not found
+    if (error.message && (
+        error.message.includes('message to delete not found') || 
+        error.message.includes('Bad Request') ||
+        error.message.includes('message can\'t be deleted')
+    )) {
+      // Message already deleted or expired, just log at debug level
+      logger.debug(`Message ${messageId} for user ${userId} already deleted or expired.`);
+    } else {
+      // For other types of errors, log as error
+      logger.error(`Error deleting message ${messageId} for user ${userId}: ${error.message}`);
+    }
   }
 };
 
@@ -111,6 +171,10 @@ Please choose an option:
 /show_filters - Show current filters
 /start_listener - Start token detection
 /stop_listener - Stop token detection
+/smart_listener - Start smart token detection and price monitoring
+/stop_smart_listener - Stop smart token detection and price monitoring
+/smart_settings - Customize smart listener behavior
+/view_analytics - View detailed token analytics
 /help - Show available commands
     `;
     await ctx.reply(welcomeMessage, { parse_mode: 'HTML' });
@@ -128,6 +192,10 @@ Please choose an option:
 /show_filters - Show current filters
 /start_listener - Start token detection
 /stop_listener - Stop token detection
+/smart_listener - Start smart token detection and price monitoring
+/stop_smart_listener - Stop smart token detection and price monitoring
+/smart_settings - Customize smart listener behavior
+/view_analytics - View detailed token analytics
 /delete_wallet - Delete your Solana wallet
 /main_menu - Go back to the main menu
     `;
@@ -150,6 +218,10 @@ Please choose an option:
   // Listener commands
   bot.command('start_listener', handleStartListenerCommand);
   bot.command('stop_listener', handleStopListenerCommand);
+  bot.command('smart_listener', handleSmartListenerCommand);
+  bot.command('stop_smart_listener', handleStopSmartListenerCommand);
+  bot.command('smart_settings', handleSmartListenerSettingsCommand);
+  bot.command('view_analytics', handleViewAnalyticsCommand);
 
   // Handle text input for setting boost amount, buy amount, and confirmations
   bot.on('message:text', async (ctx) => {

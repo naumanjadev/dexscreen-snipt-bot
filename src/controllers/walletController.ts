@@ -251,8 +251,20 @@ export const handleMainMenuCommand = async (ctx: MyContext): Promise<void> => {
 
 Please choose an option:
 /wallet - Manage your Solana wallet
-/set_filters - Set token filters
+/set_boost_amount - Set your boost amount filter
+/set_buy_amount - Set your buy amount filter
+/show_filters - Show current filters
+
+<b>Token Detection:</b>
 /start_listener - Start token detection
+/stop_listener - Stop token detection
+
+<b>Smart Listener:</b>
+/smart_listener - Start smart token detection
+/stop_smart_listener - Stop smart token detection
+/smart_settings - Customize smart listener behavior
+/view_analytics - View detailed token analytics
+
 /help - Show available commands
   `;
   await ctx.reply(welcomeMessage, { parse_mode: 'HTML' });
