@@ -122,6 +122,10 @@ const METADATA_SCHEMA = new Map<any, any>([
   ],
 ]);
 
+// Add a cache for tokens with invalid metadata to avoid repeated failures
+const invalidMetadataCache = new Set<string>();
+const INVALID_CACHE_MAX_SIZE = 500; // Limit cache size to avoid memory issues
+
 /**
  * decodeMetadata Function
  * Deserializes raw account data into a Metadata object using the Borsh schema.
@@ -131,7 +135,32 @@ const METADATA_SCHEMA = new Map<any, any>([
  */
 const decodeMetadata = (buffer: Buffer): Metadata | null => {
   try {
+    // Check for minimum buffer size to avoid "buffer length isn't within bounds" errors
+    if (!buffer || buffer.length < 100) {
+      logger.warn(`Buffer too small for metadata: ${buffer?.length || 0} bytes`);
+      return null;
+    }
+
+    // Safe deserialization with validation
     const metadata = deserialize(METADATA_SCHEMA, Metadata, buffer);
+    
+    // Basic validation to ensure we have valid data
+    if (!metadata || !metadata.data || !metadata.updateAuthority || !metadata.mint) {
+      logger.warn('Decoded metadata missing critical fields');
+      return null;
+    }
+    
+    // Check for suspiciously long strings which might indicate corrupt data
+    if (metadata.data.name && metadata.data.name.length > 100) {
+      logger.warn(`Suspicious metadata name length: ${metadata.data.name.length}`);
+      metadata.data.name = metadata.data.name.substring(0, 100);
+    }
+    
+    if (metadata.data.symbol && metadata.data.symbol.length > 20) {
+      logger.warn(`Suspicious metadata symbol length: ${metadata.data.symbol.length}`);
+      metadata.data.symbol = metadata.data.symbol.substring(0, 20);
+    }
+
     return metadata;
   } catch (error) {
     logger.error(`Failed to decode metadata: ${(error as Error).message}`);
@@ -153,6 +182,12 @@ export const fetchTokenMetadata = async (
   mintAddress: string
 ): Promise<{ name: string; symbol: string } | null> => {
   try {
+    // Check if this token is known to have invalid metadata
+    if (invalidMetadataCache.has(mintAddress)) {
+      // For cached invalid tokens, don't attempt to fetch metadata again
+      return null;
+    }
+
     const mintPublicKey = new PublicKey(mintAddress);
 
     // Compute the PDA (Program Derived Address) for the metadata account
@@ -169,6 +204,8 @@ export const fetchTokenMetadata = async (
     const accountInfo = await connection.getAccountInfo(metadataPDA);
 
     if (!accountInfo) {
+      // Add to invalid cache
+      addToInvalidCache(mintAddress);
       logger.warn(`No metadata account found for mint address: ${mintAddress}`);
       return null;
     }
@@ -177,6 +214,8 @@ export const fetchTokenMetadata = async (
     const metadata = decodeMetadata(accountInfo.data);
 
     if (!metadata) {
+      // Add to invalid cache
+      addToInvalidCache(mintAddress);
       logger.warn(`Failed to decode metadata for mint address: ${mintAddress}`);
       return null;
     }
@@ -190,6 +229,9 @@ export const fetchTokenMetadata = async (
 
     return { name, symbol };
   } catch (error) {
+    // Add to invalid cache on error
+    addToInvalidCache(mintAddress);
+    
     logger.error(
       `Error fetching token metadata for ${mintAddress}: ${
         (error as Error).message
@@ -198,3 +240,22 @@ export const fetchTokenMetadata = async (
     return null;
   }
 };
+
+// Helper function to add to invalid metadata cache with size management
+function addToInvalidCache(mintAddress: string): void {
+  // If cache is too large, remove some entries
+  if (invalidMetadataCache.size >= INVALID_CACHE_MAX_SIZE) {
+    // Remove approximately 20% of the cache to make room
+    const itemsToRemove = Math.floor(INVALID_CACHE_MAX_SIZE * 0.2);
+    let count = 0;
+    
+    for (const address of invalidMetadataCache) {
+      invalidMetadataCache.delete(address);
+      count++;
+      if (count >= itemsToRemove) break;
+    }
+  }
+  
+  // Add the new invalid address
+  invalidMetadataCache.add(mintAddress);
+}

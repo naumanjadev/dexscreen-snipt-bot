@@ -12,4 +12,6 @@ export type MyContext = Context & SessionFlavor<SessionData>;
 
 export interface TokenInfo {
   mintAddress: string;
+  name?: string;
+  symbol?: string;
 }
