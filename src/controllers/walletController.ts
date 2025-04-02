@@ -253,6 +253,7 @@ Please choose an option:
 /wallet - Manage your Solana wallet
 /set_boost_amount - Set your boost amount filter
 /set_buy_amount - Set your buy amount filter
+/set_trading_budget - Set smart listener trade amount
 /show_filters - Show current filters
 
 <b>Token Detection:</b>

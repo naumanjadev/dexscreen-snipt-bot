@@ -2,7 +2,7 @@
 import { MyContext } from '../types';
 import { updateUserSettings, getUserSettings } from '../services/userSettingsService';
 import { startTokenListener, stopTokenListener } from '../services/solanaListener';
-import { startSmartListener, stopSmartListener, isSmartListenerActive, getSmartListenerSettings, getDetailedTokenAnalytics } from '../services/smartListenerService';
+import { startSmartListener, stopSmartListener, isSmartListenerActive, getSmartListenerSettings, getDetailedTokenAnalytics, updateSmartListenerSettings } from '../services/smartListenerService';
 import { getUserWallet } from '../services/walletService';
 import { logger } from '../utils/logger';
 
@@ -65,6 +65,12 @@ export const handleSetBuyAmountCommand = async (ctx: MyContext): Promise<void> =
       }
       await updateUserSettings(userId, { buyamount: value });
       await ctx.reply(`Buy amount set to ${value} .`);
+      
+      // Also update the trading budget for smart listener if it's active
+      if (isSmartListenerActive(userId)) {
+        updateSmartListenerSettings(userId, { tradingBudget: value });
+        await ctx.reply(`Smart listener trading budget also updated to ${value} SOL.`);
+      }
     }
     ctx.session.awaitingInputFor = undefined;
   }
@@ -181,11 +187,12 @@ export const handleSmartListenerCommand = async (ctx: MyContext): Promise<void> 
 
 The bot will:
 1. Find the first token matching your filters
-2. Attempt to purchase it
+2. Attempt to purchase it using ${userSettings.buyamount} SOL
 3. Monitor its price continuously
 4. Alert you of significant price changes
 
 <i>This will run until you stop it with /stop_smart_listener</i>
+<i>You can change the trading budget with /set_trading_budget</i>
 `, { parse_mode: 'HTML' });
 
     await startSmartListener(userId);
@@ -457,3 +464,34 @@ export const handleViewAnalyticsCommand = async (ctx: MyContext): Promise<void> 
     await ctx.reply(`❌ Error viewing analytics: ${error.message}`);
   }
 };
+
+/**
+ * Handles the specific setting of trading budget for the smart listener
+ */
+export const handleSetTradingBudgetCommand = async (ctx: MyContext): Promise<void> => {
+  if (!ctx.session.awaitingInputFor) {
+    await ctx.reply('Please enter the trading budget amount in SOL:');
+    ctx.session.awaitingInputFor = 'set_trading_budget';
+  } else {
+    const input = ctx.message?.text?.trim().toLowerCase();
+    const userId = ctx.from?.id;
+
+    if (!userId || input === undefined) {
+      await ctx.reply('Unable to process your request.');
+      ctx.session.awaitingInputFor = undefined;
+      return;
+    }
+
+    const value = parseFloat(input);
+    if (isNaN(value) || value <= 0) {
+      await ctx.reply('Please enter a valid positive number.');
+      return;
+    }
+    
+    // Update the trading budget for smart listener
+    updateSmartListenerSettings(userId, { tradingBudget: value });
+    await ctx.reply(`Trading budget set to ${value} SOL for smart listener.`);
+    
+    ctx.session.awaitingInputFor = undefined;
+  }
+}

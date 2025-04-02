@@ -26,6 +26,7 @@ import {
   handleStopSmartListenerCommand,
   handleSmartListenerSettingsCommand,
   handleViewAnalyticsCommand,
+  handleSetTradingBudgetCommand,
 } from '../controllers/filterController';
 
 import { PublicKey } from '@solana/web3.js';
@@ -171,6 +172,7 @@ Please choose an option:
 /wallet - Manage your Solana wallet
 /set_boost_amount - Set your boost amount filter
 /set_buy_amount - Set your buy amount filter
+/set_trading_budget - Set smart listener trade amount
 /show_filters - Show current filters
 /start_listener - Start token detection
 /stop_listener - Stop token detection
@@ -192,6 +194,7 @@ Please choose an option:
 /wallet - Manage your Solana wallet
 /set_boost_amount - Set your boost amount filter
 /set_buy_amount - Set your buy amount filter
+/set_trading_budget - Set smart listener trade amount
 /show_filters - Show current filters
 /start_listener - Start token detection
 /stop_listener - Stop token detection
@@ -217,6 +220,7 @@ Please choose an option:
   bot.command('set_boost_amount', handleSetBoostAmountCommand);
   bot.command('set_buy_amount', handleSetBuyAmountCommand);
   bot.command('show_filters', handleShowFiltersCommand);
+  bot.command('set_trading_budget', handleSetTradingBudgetCommand);
 
   // Listener commands
   bot.command('start_listener', handleStartListenerCommand);
@@ -245,6 +249,8 @@ Please choose an option:
         await handleSetBoostAmountCommand(ctx);
       } else if (awaitingInputFor === 'set_buy_amount') {
         await handleSetBuyAmountCommand(ctx);
+      } else if (awaitingInputFor === 'set_trading_budget') {
+        await handleSetTradingBudgetCommand(ctx);
       } else if (awaitingInputFor === 'withdraw_address') {
         const input = ctx.message.text.trim();
         // Validate Solana address
