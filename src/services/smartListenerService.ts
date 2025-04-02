@@ -944,7 +944,7 @@ export const startSmartListener = async (userId: number): Promise<void> => {
   
   // Get user settings to use buyamount instead of hardcoded value
   const userSettings = await getUserSettings(userId);
-  const buyAmount = userSettings.buyamount || 0.05; // Default to 0.05 only if buyamount not set
+  const buyAmount = userSettings.buyamount !== null ? userSettings.buyamount : 0.05; // Default to 0.05 only if buyamount not set
   
   // Initialize the smart listener state
   activeSmartListeners.set(userId, {
