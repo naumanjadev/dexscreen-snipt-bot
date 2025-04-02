@@ -30,6 +30,9 @@ import {
 
 import { PublicKey } from '@solana/web3.js';
 
+// Import the new handlers
+import { handleConfirmSellCommand, handleJustStopCommand } from '../controllers/smartListenerController';
+
 // Define the session data structure
 type MySession = SessionData;
 
@@ -222,6 +225,10 @@ Please choose an option:
   bot.command('stop_smart_listener', handleStopSmartListenerCommand);
   bot.command('smart_settings', handleSmartListenerSettingsCommand);
   bot.command('view_analytics', handleViewAnalyticsCommand);
+
+  // Import the new handlers
+  bot.command('confirm_sell', handleConfirmSellCommand);
+  bot.command('just_stop', handleJustStopCommand);
 
   // Handle text input for setting boost amount, buy amount, and confirmations
   bot.on('message:text', async (ctx) => {

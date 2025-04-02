@@ -7,6 +7,7 @@ import { purchaseToken, sellToken } from './purchaseService'; // Import both fun
 import { notifyUserById, deleteMessageById } from '../bots/telegramBot';
 import axios from 'axios';
 import { fetchTokenMetadata } from './tokenMetadataService';
+import { getUserSettings } from '../services/userSettingsService';
 
 // DexScreener API Endpoints
 const DEXSCREENER_BOOSTS_URL = 'https://api.dexscreener.com/token-boosts/latest/v1';
@@ -53,6 +54,7 @@ const activeSmartListeners: Map<number, {
   recommendedSellPrice: number | null; // Added for tracking sell points
   lastMessageId: number | null; // Track the last message ID for deletion
   logoUrl: string | null; // Store token logo URL
+  pendingStop: boolean; // Track if we're waiting for stop confirmation
   // User customization options
   updateFrequency: number; // Frequency in ms to check prices (default 1000)
   notificationThreshold: number; // Minimum % change to trigger notification (default 0.05%)
@@ -940,6 +942,10 @@ export const startSmartListener = async (userId: number): Promise<void> => {
   // Stop any existing smart listener for this user
   stopSmartListener(userId);
   
+  // Get user settings to use buyamount instead of hardcoded value
+  const userSettings = await getUserSettings(userId);
+  const buyAmount = userSettings.buyamount || 0.05; // Default to 0.05 only if buyamount not set
+  
   // Initialize the smart listener state
   activeSmartListeners.set(userId, {
     tokenAddress: null,
@@ -950,6 +956,7 @@ export const startSmartListener = async (userId: number): Promise<void> => {
     recommendedSellPrice: null,
     lastMessageId: null,
     logoUrl: null,
+    pendingStop: false, // Track if we're waiting for stop confirmation
     // User customization options with defaults
     updateFrequency: 1000,
     notificationThreshold: 0.05, 
@@ -970,7 +977,7 @@ export const startSmartListener = async (userId: number): Promise<void> => {
     // Auto-trading settings with defaults
     autoTradeEnabled: true, // Enable auto-trading by default
     tradeState: 'waiting',
-    tradingBudget: 0.05, // Default to 0.05 SOL per trade
+    tradingBudget: buyAmount, // Use buyAmount from user settings
     minProfitPercent: 3.5, // Target 3.5% minimum profit (increased from 2%)
     maxLossPercent: 1.5, // Max 1.5% loss before selling (slightly increased but still conservative)
     entryPrice: null,
@@ -989,7 +996,7 @@ export const startSmartListener = async (userId: number): Promise<void> => {
     marketScannerIntervalId: null // Initialize as null
   });
   
-  const startMsg = await notifyUserById(userId, `🔍 Smart listener with enhanced auto-trading activated. Analyzing market for best opportunities...`);
+  const startMsg = await notifyUserById(userId, `🔍 Smart listener with enhanced auto-trading activated. Using ${buyAmount} SOL per trade. Analyzing market for best opportunities...`);
   
   try {
     const userListener = activeSmartListeners.get(userId);
@@ -1153,6 +1160,52 @@ export const stopSmartListener = (userId: number): void => {
     return;
   }
   
+  // Check if user is holding tokens and show profit/loss before stopping
+  if (userListener.tradeState === 'holding' && userListener.tokenAddress) {
+    // Get token details
+    const tokenAddress = userListener.tokenAddress;
+    const entryPrice = userListener.entryPrice || 0;
+    const currentPrice = userListener.lastPrice || 0;
+    const profitPercent = ((currentPrice - entryPrice) / entryPrice) * 100;
+    const amountPurchased = userListener.amountPurchased || 0;
+    const totalInvested = userListener.totalInvested || 0;
+    
+    // Calculate current values
+    const currentValue = amountPurchased * currentPrice;
+    const profitLoss = currentValue - totalInvested;
+    
+    // Ask user for confirmation before stopping and selling
+    notifyUserById(
+      userId,
+      `⚠️ <b>Smart Listener Stopping</b>
+
+You currently hold ${amountPurchased.toLocaleString()} tokens worth approximately ${currentValue.toFixed(4)} SOL
+ 
+<b>Position Status:</b> ${profitPercent >= 0 ? '📈 In Profit' : '📉 In Loss'}
+<b>Profit/Loss:</b> ${profitLoss.toFixed(4)} SOL (${profitPercent.toFixed(2)}%)
+
+<i>Do you want to sell your tokens before stopping?</i>
+Use /confirm_sell to sell and stop, or /just_stop to stop without selling.
+`
+    );
+    
+    // Don't actually stop now - wait for user confirmation
+    // Set a flag to indicate we're waiting for confirmation
+    userListener.pendingStop = true;
+    return;
+  }
+  
+  // If not holding tokens or user already confirmed, proceed with stopping
+  doStopSmartListener(userId);
+};
+
+// New helper function to actually stop the listener
+const doStopSmartListener = (userId: number): void => {
+  const userListener = activeSmartListeners.get(userId);
+  if (!userListener) {
+    return;
+  }
+  
   // Clear price check interval
   if (userListener.intervalId) {
     clearInterval(userListener.intervalId);
@@ -1180,6 +1233,43 @@ export const stopSmartListener = (userId: number): void => {
   
   activeSmartListeners.delete(userId);
   logger.info(`Smart listener stopped for user ${userId}`);
+};
+
+// New function to confirm sell and stop
+export const confirmSellAndStop = async (userId: number): Promise<void> => {
+  const userListener = activeSmartListeners.get(userId);
+  if (!userListener || !userListener.pendingStop) {
+    await notifyUserById(userId, `❌ No pending stop request. Use /stop_listener first.`);
+    return;
+  }
+  
+  if (userListener.tradeState === 'holding' && userListener.tokenAddress) {
+    // Sell tokens first
+    await notifyUserById(userId, `🔄 Selling tokens before stopping...`);
+    
+    try {
+      await executeSell(userId);
+      await notifyUserById(userId, `✅ Successfully sold tokens. Smart listener stopped.`);
+    } catch (error: any) {
+      logger.error(`Error selling tokens before stopping: ${error.message}`);
+      await notifyUserById(userId, `⚠️ Failed to sell tokens: ${error.message}. Smart listener stopped anyway.`);
+    }
+  }
+  
+  // Then stop the listener
+  doStopSmartListener(userId);
+};
+
+// New function to just stop without selling
+export const justStop = (userId: number): void => {
+  const userListener = activeSmartListeners.get(userId);
+  if (!userListener || !userListener.pendingStop) {
+    notifyUserById(userId, `❌ No pending stop request. Use /stop_listener first.`);
+    return;
+  }
+  
+  notifyUserById(userId, `✅ Smart listener stopped without selling.`);
+  doStopSmartListener(userId);
 };
 
 export const isSmartListenerActive = (userId: number): boolean => {
@@ -1278,6 +1368,7 @@ export const updateSmartListenerSettings = (userId: number, settings: Partial<{
       recommendedSellPrice: null,
       lastMessageId: null,
       logoUrl: null,
+      pendingStop: false, // Add this missing property
       updateFrequency: 1000,
       notificationThreshold: 0.05,
       profitTarget: 30,
@@ -1312,7 +1403,7 @@ export const updateSmartListenerSettings = (userId: number, settings: Partial<{
       emaLong: null,
       volatilityThreshold: 10,
       volumeThreshold: 10000,
-      marketScannerIntervalId: null // Add market scanner interval ID
+      marketScannerIntervalId: null
     };
     activeSmartListeners.set(userId, userListener);
   }
@@ -1353,7 +1444,7 @@ export const updateSmartListenerSettings = (userId: number, settings: Partial<{
     }
   }
   
-  // Update settings
+  // Update settings (userListener is guaranteed to be defined here)
   Object.assign(userListener, settings);
   
   // If the listener is active and the frequency changed, restart the interval
@@ -1381,8 +1472,6 @@ export const updateSmartListenerSettings = (userId: number, settings: Partial<{
   if (userListener.batchedNotifications.length > 0) {
     sendBatchedNotifications(userId);
   }
-  
-  logger.info(`Updated smart listener settings for user ${userId}:`, settings);
 };
 
 /**
