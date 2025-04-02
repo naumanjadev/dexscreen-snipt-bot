@@ -1358,54 +1358,65 @@ export const updateSmartListenerSettings = (userId: number, settings: Partial<{
   let userListener = activeSmartListeners.get(userId);
   
   if (!userListener) {
-    // Create a new settings object with defaults if the listener isn't active
-    userListener = {
-      tokenAddress: null,
-      intervalId: null,
-      lastPrice: null,
-      initialPrice: null,
-      highestPrice: null,
-      recommendedSellPrice: null,
-      lastMessageId: null,
-      logoUrl: null,
-      pendingStop: false, // Add this missing property
-      updateFrequency: 1000,
-      notificationThreshold: 0.05,
-      profitTarget: 30,
-      stopLoss: 10,
-      trailingStopLoss: 5,
-      autoSellEnabled: false,
-      monitorMultipleTokens: false,
-      notificationMode: 'important_only',
-      notificationInterval: 60000,
-      notificationBatchIntervalId: null,
-      batchedNotifications: [],
-      notificationMessageLifetime: 2000,
-      muteNonCritical: false,
-      lastNotificationTime: 0,
-      compactMode: false,
-      // Auto-trading defaults
-      autoTradeEnabled: true,
-      tradeState: 'waiting',
-      tradingBudget: 0.05,
-      minProfitPercent: 2,
-      maxLossPercent: 1,
-      entryPrice: null,
-      amountPurchased: null,
-      totalInvested: null,
-      totalReturned: null,
-      lastTradeTime: null,
-      profitHistory: [],
-      consecutiveLosses: 0,
-      consecutiveWins: 0,
-      rsiValues: [],
-      emaShort: null,
-      emaLong: null,
-      volatilityThreshold: 10,
-      volumeThreshold: 10000,
-      marketScannerIntervalId: null
-    };
-    activeSmartListeners.set(userId, userListener);
+    // Get user settings to use buyamount instead of hardcoded value
+    getUserSettings(userId).then(userSettings => {
+      const buyAmount = userSettings.buyamount !== null ? userSettings.buyamount : 0.05; // Default to 0.05 only if buyamount not set
+      
+      // Create a new settings object with defaults if the listener isn't active
+      userListener = {
+        tokenAddress: null,
+        intervalId: null,
+        lastPrice: null,
+        initialPrice: null,
+        highestPrice: null,
+        recommendedSellPrice: null,
+        lastMessageId: null,
+        logoUrl: null,
+        pendingStop: false, // Add this missing property
+        updateFrequency: 1000,
+        notificationThreshold: 0.05,
+        profitTarget: 30,
+        stopLoss: 10,
+        trailingStopLoss: 5,
+        autoSellEnabled: false,
+        monitorMultipleTokens: false,
+        notificationMode: 'important_only',
+        notificationInterval: 60000,
+        notificationBatchIntervalId: null,
+        batchedNotifications: [],
+        notificationMessageLifetime: 2000,
+        muteNonCritical: false,
+        lastNotificationTime: 0,
+        compactMode: false,
+        // Auto-trading defaults
+        autoTradeEnabled: true,
+        tradeState: 'waiting',
+        tradingBudget: buyAmount, // Use user's buyAmount from settings
+        minProfitPercent: 2,
+        maxLossPercent: 1,
+        entryPrice: null,
+        amountPurchased: null,
+        totalInvested: null,
+        totalReturned: null,
+        lastTradeTime: null,
+        profitHistory: [],
+        consecutiveLosses: 0,
+        consecutiveWins: 0,
+        rsiValues: [],
+        emaShort: null,
+        emaLong: null,
+        volatilityThreshold: 10,
+        volumeThreshold: 10000,
+        marketScannerIntervalId: null
+      };
+      activeSmartListeners.set(userId, userListener);
+      
+      // Apply the settings
+      Object.assign(userListener, settings);
+    }).catch(error => {
+      logger.error(`Error getting user settings: ${error.message}`, error);
+    });
+    return;
   }
   
   // Handle special case for enabling/disabling auto-trading
@@ -2245,6 +2256,11 @@ const executeBuy = async (
     // Validate token before attempting to purchase
     if (!isValidMint(tokenAddress)) {
       throw new Error('Invalid token mint address');
+    }
+
+    // Verify trading budget is valid 
+    if (!userListener.tradingBudget || userListener.tradingBudget <= 0) {
+      throw new Error('Invalid trading budget. Please set a buy amount using /set_buy_amount');
     }
 
     // Get token pair address to ensure it's tradable

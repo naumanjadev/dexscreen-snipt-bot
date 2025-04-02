@@ -98,10 +98,9 @@ export const purchaseToken = async (
       logger.error(`User ${userId} has not set a purchase amount.`);
       await notifyUserById(
         userId,
-        `⚠️ Purchase amount not set. Using default amount of 0.05 SOL.`
+        `⚠️ Purchase amount not set. Please use /set_buy_amount to set your purchase amount.`
       );
-      const defaultAmount = 0.05; // Default to 0.05 SOL if not set
-      return await executeTokenPurchase(userId, tokenInfo, defaultAmount);
+      return { success: false };
     }
 
     return await executeTokenPurchase(userId, tokenInfo, requiredSol);
