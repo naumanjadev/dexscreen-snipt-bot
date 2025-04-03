@@ -273,6 +273,20 @@ export const sellToken = async (
       return { success: false };
     }
 
+    // Get token decimals to convert normalized amount back to raw amount
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+      fromKeypair.publicKey,
+      { mint: tokenMint }
+    );
+    
+    if (tokenAccounts.value.length === 0) {
+      logger.error(`No token account found for ${tokenInfo.mintAddress}`);
+      return { success: false };
+    }
+    
+    const tokenDecimals = tokenAccounts.value[0].account.data.parsed.info.tokenAmount.decimals;
+    const rawAmountToSell = Math.floor(amountToSell * Math.pow(10, tokenDecimals));
+    
     // Get pre-sell SOL balance
     const preSellSolBalance = await getUserBalance(fromKeypair.publicKey);
     
@@ -285,7 +299,7 @@ export const sellToken = async (
       walletKeypair: fromKeypair,
       sourceTokenMint: tokenMint,
       destinationTokenMint: WSOL_MINT,
-      amountInLamports: amountToSell, // For tokens, this is raw token amount
+      amountInLamports: rawAmountToSell, // Now using raw token amount with proper decimals
       slippage, // Use optimal slippage
       priorityFee: true, // Use priority fees to ensure transactions go through
     });

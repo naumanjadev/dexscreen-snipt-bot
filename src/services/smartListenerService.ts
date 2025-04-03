@@ -8,6 +8,9 @@ import { notifyUserById, deleteMessageById } from '../bots/telegramBot';
 import axios from 'axios';
 import { fetchTokenMetadata } from './tokenMetadataService';
 import { getUserSettings } from '../services/userSettingsService';
+import { getTokenBalance } from '../services/tokenBalanceService';
+import { loadUserKeypair } from '../services/walletService';
+import { getUserWallet } from '../services/walletService';
 
 // DexScreener API Endpoints
 const DEXSCREENER_BOOSTS_URL = 'https://api.dexscreener.com/token-boosts/latest/v1';
@@ -140,8 +143,11 @@ const apiCache: Map<string, CacheEntry<any>> = new Map();
 
 // Cache TTL in milliseconds
 const CACHE_TTL = {
-  PAIR_INFO: 10000,       // 10 seconds for price info
-  TOKEN_METADATA: 3600000, // 1 hour for token metadata 
+  PRICE_INFO: 30 * 1000, // 30 seconds
+  PAIR_INFO: 30 * 1000,  // 30 seconds
+  TOKEN_LOGO: 24 * 60 * 60 * 1000, // 24 hours
+  TOKEN_METADATA: 24 * 60 * 60 * 1000, // 24 hours
+  SOL_PRICE: 5 * 60 * 1000, // 5 minutes
   TOKEN_LIST: 300000,     // 5 minutes for token lists
   PAIR_ADDRESS: 60000     // 1 minute for pair addresses
 };
@@ -1239,7 +1245,7 @@ const doStopSmartListener = (userId: number): void => {
 export const confirmSellAndStop = async (userId: number): Promise<void> => {
   const userListener = activeSmartListeners.get(userId);
   if (!userListener || !userListener.pendingStop) {
-    await notifyUserById(userId, `❌ No pending stop request. Use /stop_listener first.`);
+    await notifyUserById(userId, `❌ No pending stop request. Use /stop_smart_listener first.`);
     return;
   }
   
@@ -1248,12 +1254,31 @@ export const confirmSellAndStop = async (userId: number): Promise<void> => {
     await notifyUserById(userId, `🔄 Selling tokens before stopping...`);
     
     try {
+      // Execute sell operation
       await executeSell(userId);
-      await notifyUserById(userId, `✅ Successfully sold tokens. Smart listener stopped.`);
+      
+      // Check if sell was successful
+      const userWallet = await getUserWallet(userId);
+      if (userWallet && userListener.tokenAddress) {
+        const tokenMint = new PublicKey(userListener.tokenAddress);
+        const fromKeypair = loadUserKeypair(userWallet.encryptedPrivateKey);
+        const tokenBalance = await getTokenBalance(fromKeypair.publicKey, tokenMint);
+        
+        if (tokenBalance > 0) {
+          // Still has tokens, sell might have failed
+          await notifyUserById(userId, `⚠️ Not all tokens were sold. Smart listener stopped anyway.`);
+        } else {
+          await notifyUserById(userId, `✅ Successfully sold all tokens. Smart listener stopped.`);
+        }
+      } else {
+        await notifyUserById(userId, `✅ Sale completed. Smart listener stopped.`);
+      }
     } catch (error: any) {
       logger.error(`Error selling tokens before stopping: ${error.message}`);
       await notifyUserById(userId, `⚠️ Failed to sell tokens: ${error.message}. Smart listener stopped anyway.`);
     }
+  } else {
+    await notifyUserById(userId, `✅ No tokens to sell. Smart listener stopped.`);
   }
   
   // Then stop the listener
@@ -1264,11 +1289,11 @@ export const confirmSellAndStop = async (userId: number): Promise<void> => {
 export const justStop = (userId: number): void => {
   const userListener = activeSmartListeners.get(userId);
   if (!userListener || !userListener.pendingStop) {
-    notifyUserById(userId, `❌ No pending stop request. Use /stop_listener first.`);
+    notifyUserById(userId, `❌ No pending stop request. Use /stop_smart_listener first.`);
     return;
   }
   
-  notifyUserById(userId, `✅ Smart listener stopped without selling.`);
+  notifyUserById(userId, `✅ Smart listener stopped without selling any tokens.`);
   doStopSmartListener(userId);
 };
 
@@ -2403,6 +2428,10 @@ const executeSell = async (userId: number): Promise<void> => {
       const profit = returned - invested;
       const profitPercent = invested > 0 ? (profit / invested) * 100 : 0;
       
+      // Get SOL price in USD
+      const solPriceUsd = await getSolPriceUsd();
+      const profitUsd = profit * solPriceUsd;
+      
       // Add to profit history
       userListener.profitHistory.push({
         tokenAddress,
@@ -2441,6 +2470,7 @@ const executeSell = async (userId: number): Promise<void> => {
 <b>Tokens Sold:</b> ${sellResult.tokensSold?.toLocaleString()}
 <b>Exit Price:</b> $${sellResult.exitPrice?.toFixed(8)}
 <b>Profit/Loss:</b> ${profit.toFixed(4)} SOL (${profitPercent.toFixed(2)}%)
+<b>USD Value:</b> $${profitUsd.toFixed(2)} USD
 
 <i>Looking for next trading opportunity...</i>
         `
@@ -3012,6 +3042,35 @@ const findBestTradingOpportunity = async (userId: number): Promise<{
     logger.error(`Error in findBestTradingOpportunity: ${error.message}`, error);
     return null;
   }
+};
+
+/**
+ * Get the current SOL price in USD
+ * @returns SOL price in USD
+ */
+const getSolPriceUsd = async (): Promise<number> => {
+  return fetchWithCache<number>(
+    'sol_price_usd',
+    CACHE_TTL.SOL_PRICE,
+    async () => {
+      try {
+        const response = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
+        if (response.status === 200 && response.data?.solana?.usd) {
+          return response.data.solana.usd;
+        }
+        // Fallback if CoinGecko fails
+        const dexScreenerResponse = await axios.get('https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112');
+        if (dexScreenerResponse.status === 200 && dexScreenerResponse.data?.pairs?.length > 0) {
+          return parseFloat(dexScreenerResponse.data.pairs[0].priceUsd);
+        }
+        // Default fallback value if both APIs fail
+        return 100;  // Fallback price 
+      } catch (error: any) {
+        logger.error(`Error fetching SOL price: ${error.message}`);
+        return 100;  // Fallback price on error
+      }
+    }
+  );
 };
 
 
