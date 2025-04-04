@@ -109,12 +109,14 @@ const activeSmartListeners: Map<number, {
   volatilityThreshold: number; // Volatility threshold for trading decisions
   volumeThreshold: number; // Volume threshold for trading decisions
   marketScannerIntervalId: NodeJS.Timeout | null; // Market scanner interval ID
+  lastKnownMarketCap: number | null; // Track last known market cap for decline detection
 }> = new Map();
 
 // Add market analysis capabilities
 interface TokenMarketAnalysis {
   priceHistory: number[]; // Store recent price history for analysis
   volumeHistory: number[]; // Store recent volume data
+  liquidityHistory: number[]; // Store recent liquidity data
   movingAverages: {
     short: number | null; // Short-term moving average (5 data points)
     medium: number | null; // Medium-term moving average (20 data points)
@@ -127,6 +129,8 @@ interface TokenMarketAnalysis {
   };
   volatility: number; // Measure of price volatility
   lastUpdated: number; // Timestamp of last update
+  marketCap: number | null; // Estimated market cap if available
+  liquidityUsd: number | null; // Current liquidity in USD
 }
 
 // Map to store market analysis data for each token
@@ -548,6 +552,7 @@ const analyzeMarketData = (tokenAddress: string, currentPrice: number, priceInfo
     analysis = {
       priceHistory: [],
       volumeHistory: [],
+      liquidityHistory: [],
       movingAverages: {
         short: null,
         medium: null,
@@ -559,7 +564,9 @@ const analyzeMarketData = (tokenAddress: string, currentPrice: number, priceInfo
         overallSentiment: 'hold'
       },
       volatility: 0,
-      lastUpdated: Date.now()
+      lastUpdated: Date.now(),
+      marketCap: null,
+      liquidityUsd: null
     };
     tokenMarketAnalysis.set(tokenAddress, analysis);
   }
@@ -575,6 +582,15 @@ const analyzeMarketData = (tokenAddress: string, currentPrice: number, priceInfo
     analysis.volumeHistory.push(priceInfo.volume.h24);
     if (analysis.volumeHistory.length > 50) {
       analysis.volumeHistory.shift();
+    }
+  }
+  
+  // Update liquidity history if available
+  if (priceInfo.liquidity?.usd) {
+    analysis.liquidityHistory.push(priceInfo.liquidity.usd);
+    analysis.liquidityUsd = priceInfo.liquidity.usd;
+    if (analysis.liquidityHistory.length > 50) {
+      analysis.liquidityHistory.shift();
     }
   }
   
@@ -594,64 +610,78 @@ const analyzeMarketData = (tokenAddress: string, currentPrice: number, priceInfo
     analysis.movingAverages.long = analysis.priceHistory.slice(-50).reduce((sum, price) => sum + price, 0) / 50;
   }
   
-  // Calculate volatility (standard deviation of price changes)
-  if (analysis.priceHistory.length >= 10) {
-    const priceChanges = [];
+  // Estimate market cap if possible (this is a rough estimate)
+  // For more accurate calculation, we would need total supply data
+  try {
+    if (priceInfo.baseToken?.address === tokenAddress) {
+      // Try to calculate market cap using any available information
+      // This is a placeholder - in a real application we would fetch token supply data
+      // For now, we'll use a simple estimate based on liquidity and price
+      if (priceInfo.liquidity?.usd && priceInfo.volume?.h24) {
+        // Rough estimation: Higher volumes relative to liquidity indicate larger market cap
+        const liquidityToVolumeRatio = priceInfo.volume.h24 / priceInfo.liquidity.usd;
+        // Apply a multiplier based on the liquidity
+        const marketCapMultiplier = Math.min(50, Math.max(10, 20 * liquidityToVolumeRatio));
+        analysis.marketCap = priceInfo.liquidity.usd * marketCapMultiplier;
+      }
+    }
+  } catch (error) {
+    logger.warn(`Failed to estimate market cap for ${tokenAddress}: ${error}`);
+  }
+  
+  // Calculate short-term trend (last 5 data points)
+  if (analysis.priceHistory.length >= 5) {
+    const shortTermStart = analysis.priceHistory[analysis.priceHistory.length - 5];
+    const shortTermEnd = analysis.priceHistory[analysis.priceHistory.length - 1];
+    
+    analysis.trends.shortTerm = shortTermEnd > shortTermStart * 1.03 ? 'bullish' :
+                               shortTermEnd < shortTermStart * 0.97 ? 'bearish' : 
+                               'neutral';
+  }
+  
+  // Calculate medium-term trend (last 20 data points if available)
+  if (analysis.priceHistory.length >= 20) {
+    const mediumTermStart = analysis.priceHistory[analysis.priceHistory.length - 20];
+    const mediumTermEnd = analysis.priceHistory[analysis.priceHistory.length - 1];
+    
+    analysis.trends.mediumTerm = mediumTermEnd > mediumTermStart * 1.10 ? 'bullish' :
+                                mediumTermEnd < mediumTermStart * 0.90 ? 'bearish' : 
+                                'neutral';
+  }
+  
+  // Calculate volatility (standard deviation of percentage changes)
+  if (analysis.priceHistory.length >= 5) {
+    const percentChanges: number[] = [];
+    
     for (let i = 1; i < analysis.priceHistory.length; i++) {
       const percentChange = ((analysis.priceHistory[i] - analysis.priceHistory[i-1]) / analysis.priceHistory[i-1]) * 100;
-      priceChanges.push(percentChange);
+      percentChanges.push(percentChange);
     }
     
     // Calculate standard deviation
-    const mean = priceChanges.reduce((sum, change) => sum + change, 0) / priceChanges.length;
-    const squaredDiffs = priceChanges.map(change => Math.pow(change - mean, 2));
-    analysis.volatility = Math.sqrt(squaredDiffs.reduce((sum, diff) => sum + diff, 0) / squaredDiffs.length);
+    const mean = percentChanges.reduce((sum, change) => sum + change, 0) / percentChanges.length;
+    const squaredDiffs = percentChanges.map(change => Math.pow(change - mean, 2));
+    const variance = squaredDiffs.reduce((sum, squaredDiff) => sum + squaredDiff, 0) / squaredDiffs.length;
+    analysis.volatility = Math.sqrt(variance);
   }
   
-  // Determine trends based on moving averages
-  if (analysis.movingAverages.short && analysis.movingAverages.medium) {
-    // Short-term trend (compare current price to short MA)
-    if (currentPrice > analysis.movingAverages.short * 1.02) { // 2% above
-      analysis.trends.shortTerm = 'bullish';
-    } else if (currentPrice < analysis.movingAverages.short * 0.98) { // 2% below
-      analysis.trends.shortTerm = 'bearish';
-    } else {
-      analysis.trends.shortTerm = 'neutral';
-    }
-    
-    // Medium-term trend (compare short MA to medium MA)
-    if (analysis.movingAverages.short > analysis.movingAverages.medium * 1.03) { // 3% above
-      analysis.trends.mediumTerm = 'bullish';
-    } else if (analysis.movingAverages.short < analysis.movingAverages.medium * 0.97) { // 3% below
-      analysis.trends.mediumTerm = 'bearish';
-    } else {
-      analysis.trends.mediumTerm = 'neutral';
-    }
-  }
-  
-  // Determine overall sentiment based on trends and volatility
+  // Calculate overall market sentiment based on multiple factors
   if (analysis.trends.shortTerm === 'bullish' && analysis.trends.mediumTerm === 'bullish') {
     analysis.trends.overallSentiment = 'strong_buy';
-  } else if (analysis.trends.shortTerm === 'bullish' && analysis.trends.mediumTerm === 'neutral') {
+  } else if (analysis.trends.shortTerm === 'bullish' && analysis.trends.mediumTerm !== 'bearish') {
     analysis.trends.overallSentiment = 'buy';
   } else if (analysis.trends.shortTerm === 'bearish' && analysis.trends.mediumTerm === 'bearish') {
     analysis.trends.overallSentiment = 'strong_sell';
-  } else if (analysis.trends.shortTerm === 'bearish' && analysis.trends.mediumTerm === 'neutral') {
+  } else if (analysis.trends.shortTerm === 'bearish' && analysis.trends.mediumTerm !== 'bullish') {
     analysis.trends.overallSentiment = 'sell';
   } else {
     analysis.trends.overallSentiment = 'hold';
   }
   
-  // Adjust for very high volatility - more caution
-  if (analysis.volatility > 10) { // Very volatile (>10% standard deviation)
-    if (analysis.trends.overallSentiment === 'buy') {
-      analysis.trends.overallSentiment = 'hold'; // Downgrade buy to hold when volatile
-    } else if (analysis.trends.overallSentiment === 'strong_buy') {
-      analysis.trends.overallSentiment = 'buy'; // Downgrade strong buy to buy when volatile
-    }
-  }
-  
+  // Update lastUpdated timestamp
   analysis.lastUpdated = Date.now();
+  
+  // Return the updated analysis
   return analysis;
 };
 
@@ -997,10 +1027,28 @@ export const startSmartListener = async (userId: number): Promise<void> => {
     rsiValues: [],
     emaShort: null,
     emaLong: null,
-    volatilityThreshold: 15, // Increased to handle higher volatility
-    volumeThreshold: 15000, // Increased minimum volume threshold for more liquid tokens
-    marketScannerIntervalId: null // Initialize as null
+    volatilityThreshold: 10,
+    volumeThreshold: 10000,
+    marketScannerIntervalId: null,
+    lastKnownMarketCap: null // Initialize last known market cap as null
   });
+  
+  // Send a message explaining how trading works
+  await notifyUserById(userId, `
+📊 <b>How Trading Works in This Smart Listener</b>
+
+The smart listener automatically analyzes tokens and trades based on:
+
+1️⃣ <b>Technical indicators</b> - RSI, MACD, price trends
+2️⃣ <b>Liquidity factors</b> - Only trades tokens with sufficient liquidity
+3️⃣ <b>Market cap assessment</b> - Avoids overvalued tokens
+4️⃣ <b>Risk management</b> - Uses stop losses and trailing stops
+5️⃣ <b>Volume analysis</b> - Prioritizes tokens with healthy volume
+
+The system automatically adjusts strategy after wins or losses, becoming more conservative after losses and more aggressive after wins.
+
+To know more about the smart trading engine: <a href="https://www.notion.so/huztfq/Smart-Trading-Engine-1ca5497f963e800fb03cc32129df7731">Click here</a>
+`);
   
   const startMsg = await notifyUserById(userId, `🔍 Smart listener with enhanced auto-trading activated. Using ${buyAmount} SOL per trade. Analyzing market for best opportunities...`);
   
@@ -1432,7 +1480,8 @@ export const updateSmartListenerSettings = (userId: number, settings: Partial<{
         emaLong: null,
         volatilityThreshold: 10,
         volumeThreshold: 10000,
-        marketScannerIntervalId: null
+        marketScannerIntervalId: null,
+        lastKnownMarketCap: null // Add last known market cap tracking
       };
       activeSmartListeners.set(userId, userListener);
       
@@ -1619,109 +1668,103 @@ const generateDetailedAnalyticsReport = (
     report += `<b>24h Change:</b> ${changeEmoji} ${last24hChange.toFixed(2)}%\n`;
   }
   
-  report += `
-<b>Market Sentiment:</b> ${getSentimentEmoji(analysis.trends.overallSentiment)} ${analysis.trends.overallSentiment.toUpperCase().replace('_', ' ')}
-<b>Short-term Trend:</b> ${getTrendEmoji(analysis.trends.shortTerm)} ${analysis.trends.shortTerm.toUpperCase()}
-<b>Medium-term Trend:</b> ${getTrendEmoji(analysis.trends.mediumTerm)} ${analysis.trends.mediumTerm.toUpperCase()}
-<b>Volatility:</b> ${getVolatilityLevel(analysis.volatility)} (${analysis.volatility.toFixed(2)}%)
-`;
-
-  // Add moving averages
-  report += `
-<b>Technical Indicators:</b>`;
-
-  if (analysis.movingAverages.short) {
-    const position = currentPrice > analysis.movingAverages.short ? 'ABOVE' : 'BELOW';
-    const emoji = currentPrice > analysis.movingAverages.short ? '🟢' : '🔴';
-    report += `
-• MA (5): $${analysis.movingAverages.short.toFixed(8)} (Price ${emoji} ${position})`;
+  // Add market cap info if available
+  if (analysis.marketCap !== null) {
+    const formattedMarketCap = analysis.marketCap >= 1000000 
+      ? `$${(analysis.marketCap / 1000000).toFixed(2)}M` 
+      : `$${(analysis.marketCap / 1000).toFixed(2)}K`;
+    report += `<b>Est. Market Cap:</b> ${formattedMarketCap}\n`;
   }
   
-  if (analysis.movingAverages.medium) {
-    const position = currentPrice > analysis.movingAverages.medium ? 'ABOVE' : 'BELOW';
-    const emoji = currentPrice > analysis.movingAverages.medium ? '🟢' : '🔴';
-    report += `
-• MA (20): $${analysis.movingAverages.medium.toFixed(8)} (Price ${emoji} ${position})`;
+  // Add liquidity info if available
+  if (analysis.liquidityUsd !== null) {
+    const formattedLiquidity = analysis.liquidityUsd >= 1000000 
+      ? `$${(analysis.liquidityUsd / 1000000).toFixed(2)}M` 
+      : `$${(analysis.liquidityUsd / 1000).toFixed(2)}K`;
+    
+    let liquidityEmoji = '🟡';
+    if (analysis.liquidityUsd > 500000) liquidityEmoji = '🟢';
+    else if (analysis.liquidityUsd < 50000) liquidityEmoji = '🔴';
+    
+    report += `<b>Liquidity:</b> ${liquidityEmoji} ${formattedLiquidity}\n`;
   }
   
-  if (analysis.movingAverages.long) {
-    const position = currentPrice > analysis.movingAverages.long ? 'ABOVE' : 'BELOW';
-    const emoji = currentPrice > analysis.movingAverages.long ? '🟢' : '🔴';
-    report += `
-• MA (50): $${analysis.movingAverages.long.toFixed(8)} (Price ${emoji} ${position})`;
-  }
-  
-  // Add trading signals section
-  report += `
-
-<b>Trading Signals:</b>`;
-
-  // Add Golden Cross / Death Cross detection
-  if (analysis.movingAverages.short && analysis.movingAverages.medium) {
-    if (analysis.movingAverages.short > analysis.movingAverages.medium) {
-      report += `
-• ✨ <b>GOLDEN CROSS</b>: Short-term MA above medium-term MA (bullish)`;
-    } else if (analysis.movingAverages.short < analysis.movingAverages.medium) {
-      report += `
-• ⚠️ <b>DEATH CROSS</b>: Short-term MA below medium-term MA (bearish)`;
+  // Liquidity change if we have enough history
+  if (analysis.liquidityHistory.length > 3) {
+    const liquidityChange = ((analysis.liquidityHistory[analysis.liquidityHistory.length - 1] - 
+                             analysis.liquidityHistory[analysis.liquidityHistory.length - 3]) / 
+                             analysis.liquidityHistory[analysis.liquidityHistory.length - 3]) * 100;
+    
+    if (!isNaN(liquidityChange)) {
+      const changeEmoji = liquidityChange >= 0 ? '🟢' : '🔴';
+      report += `<b>Liquidity Change:</b> ${changeEmoji} ${liquidityChange.toFixed(2)}%\n`;
     }
   }
   
-  // Add volume analysis if available
-  if (analysis.volumeHistory.length > 0) {
-    const currentVolume = analysis.volumeHistory[analysis.volumeHistory.length - 1];
-    const averageVolume = analysis.volumeHistory.reduce((sum, vol) => sum + vol, 0) / analysis.volumeHistory.length;
-    const volumeRatio = currentVolume / averageVolume;
+  // Technical indicators section
+  report += `\n<b>Technical Indicators:</b>\n`;
+  
+  const rsi = calculateRSI(analysis.priceHistory);
+  if (rsi) {
+    let rsiEmoji = '🟡';
+    let rsiDescription = 'neutral';
     
-    let volumeSignal = '';
-    if (volumeRatio > 1.5) {
-      volumeSignal = '🔊 <b>HIGH VOLUME</b>: Volume is significantly above average (bullish if price increasing)';
-    } else if (volumeRatio < 0.5) {
-      volumeSignal = '🔈 <b>LOW VOLUME</b>: Volume is significantly below average (consider waiting for volume confirmation)';
-    } else {
-      volumeSignal = '🔉 <b>NORMAL VOLUME</b>: Volume is around average';
+    if (rsi > 70) {
+      rsiEmoji = '🔴';
+      rsiDescription = 'overbought';
+    } else if (rsi < 30) {
+      rsiEmoji = '🟢';
+      rsiDescription = 'oversold';
     }
     
-    report += `
-• ${volumeSignal}`;
+    report += `<b>RSI (14):</b> ${rsiEmoji} ${rsi.toFixed(2)} (${rsiDescription})\n`;
   }
   
-  // Add price action signals
-  const recentPrices = analysis.priceHistory.slice(-5);
-  let consecutiveUp = 0;
-  let consecutiveDown = 0;
+  // MACD information
+  const macd = calculateMACD(analysis.priceHistory);
+  const macdTrend = macd.histogram > 0 ? '🟢 bullish' : '🔴 bearish';
+  const macdCrossing = (macd.previousHistogram < 0 && macd.histogram > 0) ? ' (bullish cross)' : 
+                       (macd.previousHistogram > 0 && macd.histogram < 0) ? ' (bearish cross)' : '';
   
-  for (let i = 1; i < recentPrices.length; i++) {
-    if (recentPrices[i] > recentPrices[i-1]) {
-      consecutiveUp++;
-      consecutiveDown = 0;
-    } else if (recentPrices[i] < recentPrices[i-1]) {
-      consecutiveDown++;
-      consecutiveUp = 0;
-    }
+  report += `<b>MACD:</b> ${macdTrend}${macdCrossing}\n`;
+  
+  // Moving Averages
+  if (analysis.movingAverages.short !== null && analysis.movingAverages.medium !== null) {
+    const shortAboveMedium = analysis.movingAverages.short > analysis.movingAverages.medium;
+    const maSignal = shortAboveMedium ? '🟢 bullish' : '🔴 bearish';
+    report += `<b>MA Cross:</b> ${maSignal} (Short ${shortAboveMedium ? '>' : '<'} Medium)\n`;
   }
   
-  if (consecutiveUp >= 3) {
-    report += `
-• 🚀 <b>STRONG MOMENTUM</b>: Price has increased for ${consecutiveUp} consecutive periods`;
-  } else if (consecutiveDown >= 3) {
-    report += `
-• 📉 <b>DOWNWARD PRESSURE</b>: Price has decreased for ${consecutiveDown} consecutive periods`;
+  // Volatility
+  const volatilityLevel = getVolatilityLevel(analysis.volatility);
+  let volatilityEmoji = '🟡';
+  if (volatilityLevel.includes('high')) volatilityEmoji = '🔴';
+  else if (volatilityLevel.includes('low')) volatilityEmoji = '🟢';
+  
+  report += `<b>Volatility:</b> ${volatilityEmoji} ${volatilityLevel} (${analysis.volatility.toFixed(2)}%)\n`;
+  
+  // Volume trends
+  if (analysis.volumeHistory.length > 1) {
+    const volumeTrend = isVolumeIncreasing(analysis.volumeHistory) ? '🟢 increasing' : '🔴 decreasing';
+    report += `<b>Volume Trend:</b> ${volumeTrend}\n`;
   }
   
-  // Add price prediction based on trends
-  report += `
-
-<b>Action Recommendation:</b>
-${getActionRecommendation(analysis)}
-
-<i>Generated at ${new Date().toLocaleString()}</i>
-<i>Data points: ${analysis.priceHistory.length}</i>
-
-🔗 <a href="https://dexscreener.com/solana/${tokenAddress}">View on DexScreener</a>
-🔗 <a href="https://solscan.io/token/${tokenAddress}">View on SolScan</a>
-`;
-
+  // Overall sentiment
+  const sentimentEmoji = getSentimentEmoji(analysis.trends.overallSentiment);
+  report += `\n<b>Market Sentiment:</b> ${sentimentEmoji} ${analysis.trends.overallSentiment.replace('_', ' ').toUpperCase()}\n`;
+  
+  // Trends
+  report += `<b>Short-term Trend:</b> ${getTrendEmoji(analysis.trends.shortTerm)} ${analysis.trends.shortTerm}\n`;
+  report += `<b>Medium-term Trend:</b> ${getTrendEmoji(analysis.trends.mediumTerm)} ${analysis.trends.mediumTerm}\n`;
+  
+  // Action recommendation
+  report += `\n<b>Recommendation:</b>\n${getActionRecommendation(analysis)}`;
+  
+  // Add liquidation risk warning if applicable
+  if (analysis.liquidityUsd !== null && analysis.liquidityUsd < 50000) {
+    report += `\n\n⚠️ <b>WARNING:</b> Low liquidity token. High risk of price impact when selling.`;
+  }
+  
   return report;
 };
 
@@ -2038,6 +2081,23 @@ const shouldBuy = (
   // Check for bullish divergence between price and RSI (powerful buy signal)
   const hasBullishDivergence = checkBullishDivergence(analysis.priceHistory, userListener.rsiValues);
 
+  // Liquidity and market cap checks (new additions)
+  const hasMinimumLiquidity = analysis.liquidityUsd !== null && analysis.liquidityUsd >= 25000; // Minimum liquidity threshold
+  const hasGoodLiquidity = analysis.liquidityUsd !== null && analysis.liquidityUsd >= 100000; // Good liquidity threshold
+  const hasStrongLiquidity = analysis.liquidityUsd !== null && analysis.liquidityUsd >= 500000; // Strong liquidity
+
+  // Market cap assessment (if available)
+  const hasReasonableMarketCap = analysis.marketCap !== null && analysis.marketCap >= 500000; // Reasonable market cap
+  const isNotOvervalued = analysis.marketCap === null || 
+                         (analysis.marketCap !== null && analysis.volumeHistory && 
+                          analysis.volumeHistory.length > 0 && 
+                          analysis.marketCap / analysis.volumeHistory[analysis.volumeHistory.length - 1] < 50); // Not overvalued relative to volume
+
+  // Check if liquidity is stable or growing
+  const isLiquidityStable = analysis.liquidityHistory.length >= 3 && 
+                           analysis.liquidityHistory[analysis.liquidityHistory.length - 1] >= 
+                           analysis.liquidityHistory[analysis.liquidityHistory.length - 3] * 0.9; // Liquidity hasn't dropped significantly
+
   // Advanced buy conditions:
   
   // 1. RSI is coming up from oversold territory (below 30)
@@ -2074,29 +2134,37 @@ const shouldBuy = (
   // 8. We have enough price history to make a good decision
   const enoughHistory = analysis.priceHistory.length >= 20;
   
+  // Define a basic liquidity requirement for any trade
+  if (!hasMinimumLiquidity) {
+    return false; // Never trade when liquidity is too low
+  }
+
   // More conservative or aggressive based on past performance
   if (userListener.consecutiveLosses >= 3) {
-    // After multiple losses, be more conservative - require stronger signals
+    // After multiple losses, be more conservative - require stronger signals and higher liquidity
     return (
-      (rsiOversoldRecovery && marketSentiment && priceAboveLongTermMA) || 
+      ((rsiOversoldRecovery && marketSentiment && priceAboveLongTermMA) || 
       (goldenCross && macdPositive && volumeIncreasing) ||
       (hasBullishDivergence && marketSentiment) || // Bullish divergence is a strong signal
-      (analysis.trends.overallSentiment === 'strong_buy' && volumeIncreasing && positiveVelocity)
+      (analysis.trends.overallSentiment === 'strong_buy' && volumeIncreasing && positiveVelocity)) &&
+      hasGoodLiquidity && isLiquidityStable && hasReasonableMarketCap && isNotOvervalued
     ) && enoughHistory;
   } else if (userListener.consecutiveWins >= 2) {
-    // After wins, we can be slightly more aggressive
+    // After wins, we can be slightly more aggressive, but still consider liquidity
     return (
       (rsiOversoldRecovery || goldenCross || hasBullishDivergence) &&
       (marketSentiment || positiveVelocity) &&
+      hasMinimumLiquidity && isLiquidityStable &&
       enoughHistory
     );
   }
   
-  // Standard decision logic with multiple confirmation factors
+  // Standard decision logic with multiple confirmation factors, now including liquidity and market cap
   return (
-    ((rsiOversoldRecovery || goldenCross || hasBullishDivergence) && marketSentiment) ||
+    (((rsiOversoldRecovery || goldenCross || hasBullishDivergence) && marketSentiment) ||
     (macdPositive && volumeIncreasing && marketSentiment) ||
-    (analysis.trends.overallSentiment === 'strong_buy' && positiveVelocity)
+    (analysis.trends.overallSentiment === 'strong_buy' && positiveVelocity)) && 
+    hasMinimumLiquidity && isLiquidityStable
   ) && enoughHistory;
 };
 
@@ -2882,6 +2950,7 @@ const findBestTradingOpportunity = async (userId: number): Promise<{
           analysis = {
             priceHistory: [currentPrice],
             volumeHistory: priceInfo.volume?.h24 ? [priceInfo.volume.h24] : [],
+            liquidityHistory: priceInfo.liquidity?.usd ? [priceInfo.liquidity.usd] : [],
             movingAverages: {
               short: null,
               medium: null,
@@ -2893,7 +2962,9 @@ const findBestTradingOpportunity = async (userId: number): Promise<{
               overallSentiment: 'hold'
             },
             volatility: 0,
-            lastUpdated: Date.now()
+            lastUpdated: Date.now(),
+            marketCap: null,
+            liquidityUsd: null
           };
           tokenMarketAnalysis.set(token.tokenAddress, analysis);
           
@@ -2917,6 +2988,14 @@ const findBestTradingOpportunity = async (userId: number): Promise<{
           analysis.volumeHistory.push(priceInfo.volume.h24);
           if (analysis.volumeHistory.length > 50) {
             analysis.volumeHistory.shift();
+          }
+        }
+        
+        // Update liquidity history
+        if (priceInfo.liquidity?.usd) {
+          analysis.liquidityHistory.push(priceInfo.liquidity.usd);
+          if (analysis.liquidityHistory.length > 50) {
+            analysis.liquidityHistory.shift();
           }
         }
         
