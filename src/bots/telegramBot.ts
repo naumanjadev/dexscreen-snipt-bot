@@ -4,6 +4,7 @@ import { Bot, session } from 'grammy';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { MyContext, SessionData } from '../types';
+import * as https from 'https';
 
 import {
   handleWalletCommand,
@@ -133,7 +134,17 @@ export const createBot = (): Bot<MyContext> => {
     process.exit(1);
   }
 
-  const bot = new Bot<MyContext>(config.telegramBotToken);
+  const bot = new Bot<MyContext>(config.telegramBotToken, {
+    client: {
+      timeoutSeconds: 60, // Set timeout to 60 seconds
+      apiRoot: "https://api.telegram.org",
+      baseFetchConfig: {
+        agent: new https.Agent({
+          family: 4 // Force IPv4
+        })
+      }
+    }
+  });
 
   // Initialize session middleware
   bot.use(
