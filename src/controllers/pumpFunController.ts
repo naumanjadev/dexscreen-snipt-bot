@@ -17,6 +17,8 @@ import {
 } from '../services/pumpFunService';
 import { config } from '../config';
 import WebSocket from 'ws';
+import dns from 'dns';
+import fetch from 'node-fetch';
 
 /**
  * Handle starting the Pump.fun listener
@@ -756,77 +758,125 @@ async function getConnectionStatus(userId: number): Promise<{
  */
 export const handlePumpFunDiagnostics = async (ctx: MyContext): Promise<void> => {
   try {
-    const userId = ctx.from?.id;
-    if (!userId) {
-      await ctx.reply('❌ User ID not found.');
-      return;
-    }
-
-    // Check if user has admin rights - add this if needed
+    // Send initial message
+    await ctx.reply('🔍 Running Pump.fun network diagnostics...');
+    const statusMsg = await ctx.reply('This will test DNS resolution, HTTP connectivity, and WebSocket connections.\nPlease wait, this may take up to 15 seconds...');
     
-    await ctx.reply('🔍 Running Pump.fun network diagnostics...\n\nThis will test DNS resolution, HTTP connectivity, and WebSocket connections.\nPlease wait, this may take up to 15 seconds...');
+    // Test DNS resolution
+    const dnsResults: {[key: string]: string} = {};
+    let dnsWorking = true;
+    const domains = ['socket.pump.fun', 'api.pump.fun', 'pump.fun'];
     
-    // Run diagnostics
-    const results = await runPumpFunDiagnostics(userId);
-    
-    // Format the results
-    let message = `📊 <b>Pump.fun Diagnostic Results</b>\n\n`;
-    
-    // DNS Results
-    message += `<b>DNS Resolution:</b> ${results.dns ? '✅ Working' : '❌ Failed'}\n`;
-    message += results.dnsResults.join('\n') + '\n\n';
-    
-    // HTTP Connectivity
-    message += `<b>HTTP Connectivity:</b> ${results.http ? '✅ Working' : '❌ Failed'}\n`;
-    
-    // WebSocket Status
-    message += `<b>WebSocket Connectivity:</b> ${results.websocket ? '✅ Working' : '❌ Failed'}\n`;
-    
-    // Current connection state
-    if (results.connectionState) {
-      message += `<b>Current Connection:</b> ${results.connectionState.connected ? '✅ Connected' : '❌ Disconnected'}\n`;
-      if (results.connectionState.readyState !== undefined) {
-        message += `<b>Connection State:</b> ${
-          results.connectionState.readyState === WebSocket.CONNECTING ? 'Connecting' :
-          results.connectionState.readyState === WebSocket.OPEN ? 'Open' :
-          results.connectionState.readyState === WebSocket.CLOSING ? 'Closing' :
-          results.connectionState.readyState === WebSocket.CLOSED ? 'Closed' : 'Unknown'
-        }\n`;
+    for (const domain of domains) {
+      try {
+        const resolved = await dns.promises.resolve4(domain);
+        dnsResults[domain] = resolved[0];
+      } catch (err) {
+        dnsResults[domain] = 'Failed to resolve';
+        dnsWorking = false;
       }
     }
     
-    // Error message if any
-    if (results.errorMessage) {
-      message += `\n<b>Error Message:</b> ${results.errorMessage}\n`;
+    // Test HTTP connectivity with retry mechanism
+    let httpWorking = false;
+    let httpError = '';
+    
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+        
+        const response = await fetch('https://api.pump.fun/health', {
+          signal: controller.signal,
+          headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+          httpWorking = true;
+          break;
+        } else {
+          httpError = `Status: ${response.status}`;
+        }
+      } catch (err: any) {
+        httpError = err.message || 'Connection failed';
+        // Wait before retry
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 2000));
+      }
     }
     
-    // Recommendations
-    message += '\n<b>Recommendations:</b>\n';
+    // Test WebSocket connectivity with retry mechanism
+    let wsWorking = false;
+    let wsError = '';
     
-    if (!results.dns) {
-      message += '• Configure a reliable DNS server (e.g., 8.8.8.8 or 1.1.1.1)\n';
-      message += '• Add socket.pump.fun to your /etc/hosts file with IP 52.198.55.31\n';
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const ws = new WebSocket('wss://socket.pump.fun/socket.io/?EIO=4&transport=websocket');
+        
+        const wsResult = await new Promise<{success: boolean, error?: string}>((resolve) => {
+          const timeout = setTimeout(() => {
+            ws.terminate();
+            resolve({ success: false, error: 'Connection timeout' });
+          }, 10000);
+          
+          ws.on('open', () => {
+            clearTimeout(timeout);
+            ws.close();
+            resolve({ success: true });
+          });
+          
+          ws.on('error', (error) => {
+            clearTimeout(timeout);
+            ws.terminate();
+            resolve({ success: false, error: error.message });
+          });
+        });
+        
+        if (wsResult.success) {
+          wsWorking = true;
+          break;
+        } else {
+          wsError = wsResult.error || 'Connection failed';
+        }
+      } catch (err: any) {
+        wsError = err.message || 'Connection failed';
+        // Wait before retry
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 2000));
+      }
     }
     
-    if (!results.http) {
-      message += '• Check if your network blocks outbound HTTPS (port 443) connections\n';
-      message += '• Verify your EC2 security group allows outbound traffic\n';
+    // Format results message
+    let diagResultsMsg = `📊 Pump.fun Diagnostic Results\n\n`;
+    diagResultsMsg += `DNS Resolution: ${dnsWorking ? '✅ Working' : '❌ Failed'}\n`;
+    
+    for (const [domain, ip] of Object.entries(dnsResults)) {
+      diagResultsMsg += `${dnsWorking ? '✅' : '❌'} ${domain} resolves to ${ip}\n`;
     }
     
-    if (!results.websocket) {
-      message += '• Ensure WebSocket connections on port 443 are allowed\n';
-      message += '• Check if your network or proxy blocks WebSocket upgrades\n';
+    diagResultsMsg += `\nHTTP Connectivity: ${httpWorking ? '✅ Working' : '❌ Failed'}\n`;
+    diagResultsMsg += `WebSocket Connectivity: ${wsWorking ? '✅ Working' : '❌ Failed'}\n`;
+    
+    if (!httpWorking || !wsWorking) {
+      diagResultsMsg += `\nError Message: ${httpWorking ? wsError : httpError}\n\n`;
+      diagResultsMsg += `Recommendations:\n`;
+      diagResultsMsg += `• Check if your network blocks outbound HTTPS (port 443) connections\n`;
+      diagResultsMsg += `• Verify your EC2 security group allows outbound traffic\n`;
+      diagResultsMsg += `• Ensure WebSocket connections on port 443 are allowed\n`;
+      diagResultsMsg += `• Check if your network or proxy blocks WebSocket upgrades\n\n`;
+      
+      diagResultsMsg += `To fix EC2 connectivity issues:\n`;
+      diagResultsMsg += `1. Edit your EC2 security group to allow all outbound traffic\n`;
+      diagResultsMsg += `2. Run these commands on your server:\n`;
+      diagResultsMsg += `echo "52.198.55.31 socket.pump.fun" | sudo tee -a /etc/hosts\n`;
+      diagResultsMsg += `echo "nameserver 8.8.8.8" | sudo tee -a /etc/resolv.conf\n`;
     }
     
-    message += '\n<b>To fix EC2 connectivity issues:</b>\n';
-    message += '1. Edit your EC2 security group to allow all outbound traffic\n';
-    message += '2. Run these commands on your server:\n';
-    message += '<code>echo "52.198.55.31 socket.pump.fun" | sudo tee -a /etc/hosts</code>\n';
-    message += '<code>echo "nameserver 8.8.8.8" | sudo tee -a /etc/resolv.conf</code>\n';
+    // Update status message with results
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, diagResultsMsg);
     
-    await ctx.reply(message, { parse_mode: 'HTML' });
-  } catch (error: any) {
-    logger.error(`Error in handlePumpFunDiagnostics: ${error.message}`, error);
-    await ctx.reply(`❌ Failed to run diagnostics: ${error.message}`);
+  } catch (error) {
+    logger.error('Error running pump.fun diagnostics:', error);
+    await ctx.reply('❌ Error running diagnostics. Please try again later.');
   }
 }; 
