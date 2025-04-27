@@ -1302,7 +1302,7 @@ export const testPumpFunConnection = async (userId: number): Promise<{
       packetLoss?: number;
     };
     errorDetails?: string;
-  };
+  }
 }> {
   const result = {
     success: false,
