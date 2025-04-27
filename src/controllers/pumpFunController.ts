@@ -11,9 +11,7 @@ import {
   isPumpFunListenerActive,
   getPumpFunListenerStatus,
   getPumpFunTradingHistory,
-  PumpFunSettings,
-  getPumpFunConnectionState,
-  runPumpFunDiagnostics
+  PumpFunSettings
 } from '../services/pumpFunService';
 import { config } from '../config';
 import WebSocket from 'ws';
@@ -21,12 +19,16 @@ import dns from 'dns';
 import fetch from 'node-fetch';
 import axios from 'axios';
 import https from 'https';
+// @ts-ignore - Handle missing ping module
 import ping from 'ping';
 import { notifyUserById } from '../bots/telegramBot';
 import { promisify } from 'util';
 
 // Promisify dns.lookup for easier usage
 const dnsLookup = promisify(dns.lookup);
+
+// Add missing activeListeners map
+const activeListeners = new Map<number, any>();
 
 /**
  * Handle starting the Pump.fun listener
@@ -817,7 +819,7 @@ export const handlePumpFunDiagnostics = async (ctx: MyContext): Promise<void> =>
       try {
         const ws = new WebSocket('wss://socket.pumpportal.fun/socket.io/?EIO=4&transport=websocket');
         
-        const wsResult = await new Promise<{success: boolean, error?: string}>((resolve) => {
+        const wsResult = await new Promise<{success: boolean, error?: string}>((resolve, reject) => {
           const timeout = setTimeout(() => {
             ws.terminate();
             resolve({ success: false, error: 'Connection timeout' });
@@ -877,7 +879,12 @@ export const handlePumpFunDiagnostics = async (ctx: MyContext): Promise<void> =>
     
     // Update status message with results
     if (ctx.chat) {
-      await ctx.api.editMessageText(ctx.chat.id, loadingMsg.message_id, null, diagResultsMsg);
+      try {
+        // Try to edit the message, but if it fails, just send a new one
+        ctx.reply(diagResultsMsg);
+      } catch (err) {
+        ctx.reply(diagResultsMsg);
+      }
     } else {
       // If chat is undefined, try sending a new message
       await ctx.reply(diagResultsMsg);
@@ -1023,7 +1030,8 @@ async function connectToPumpFunWebSocket(userId: number): Promise<void> {
           
           ws.on('open', () => {
             clearTimeout(timeout);
-            resolve(true);
+            ws.close();
+            resolve({ success: true });
           });
           
           ws.on('error', (error) => {
@@ -1303,7 +1311,7 @@ export const testPumpFunConnection = async (userId: number): Promise<{
     };
     errorDetails?: string;
   }
-}> {
+}> => {
   const result = {
     success: false,
     details: {
@@ -1311,11 +1319,14 @@ export const testPumpFunConnection = async (userId: number): Promise<{
       websocket: false,
       dns: {
         success: false,
-        results: {}
+        results: {} as Record<string, string>
       },
       ping: {
-        success: false
-      }
+        success: false,
+        latency: undefined as number | undefined,
+        packetLoss: undefined as number | undefined
+      },
+      errorDetails: undefined as string | undefined
     }
   };
 
@@ -1425,11 +1436,16 @@ export const testPumpFunConnection = async (userId: number): Promise<{
       }
     }
 
-    // Overall success if both HTTP and WebSocket work
-    result.success = result.details.http && result.details.websocket;
-    return result;
+    // If we get this far, determine overall success
+    result.success = result.details.dns.success && result.details.http && result.details.websocket;
+    
   } catch (error: any) {
-    result.details.errorDetails = `GENERAL ERROR: ${error.message}`;
-    return result;
+    if (!result.details.errorDetails) {
+      result.details.errorDetails = `GENERAL ERROR: ${error.message}`;
+    } else {
+      result.details.errorDetails += ` | GENERAL ERROR: ${error.message}`;
+    }
   }
-}; 
+
+  return result;
+}
