@@ -100,6 +100,8 @@ const activeSmartListeners: Map<number, {
     profit: number;
     profitPercent: number;
     timestamp: number;
+    isPartial?: boolean; // Indicates if this was a partial sell
+    percentageSold?: number; // Percentage of position that was sold
   }>; // History of completed trades
   consecutiveLosses: number; // Track consecutive losing trades to adjust strategy
   consecutiveWins: number; // Track consecutive winning trades to adjust strategy
@@ -2477,62 +2479,94 @@ const executeSell = async (userId: number): Promise<void> => {
     const entryPrice = userListener.entryPrice || 0;
     const profitPercent = ((currentPrice - entryPrice) / entryPrice) * 100;
     
+    // Determine sell percentage based on profit level
+    let sellPercentage = 100; // Default to selling everything
+    let sellMessage = '';
+    
+    if (profitPercent >= 30) {
+      // For significant profit (30%+), sell 75%
+      sellPercentage = 75;
+      sellMessage = `Taking 75% profit at ${profitPercent.toFixed(2)}% gain`;
+    } else if (profitPercent >= 15) {
+      // For good profit (15-30%), sell 50%
+      sellPercentage = 50;
+      sellMessage = `Taking 50% profit at ${profitPercent.toFixed(2)}% gain`;
+    } else if (profitPercent >= 5) {
+      // For modest profit (5-15%), sell 25%
+      sellPercentage = 25;
+      sellMessage = `Taking 25% profit at ${profitPercent.toFixed(2)}% gain`;
+    } else if (profitPercent < 0) {
+      // If in loss, sell everything
+      sellPercentage = 100;
+      sellMessage = `Cutting loss at ${profitPercent.toFixed(2)}%`;
+    } else {
+      // For small profit (0-5%), sell everything
+      sellPercentage = 100;
+      sellMessage = `Taking full profit at ${profitPercent.toFixed(2)}% gain`;
+    }
+    
     // Notify user we're selling
     await notifyUserById(
       userId,
-      `🔄 <b>AUTO-TRADE:</b> Selling ${tokenName} (${tokenSymbol}) at ${profitPercent.toFixed(2)}% ${profitPercent >= 0 ? 'profit' : 'loss'}...`
+      `🔄 <b>AUTO-TRADE:</b> ${sellMessage}
+
+Selling ${sellPercentage}% of ${tokenName} (${tokenSymbol})...`
     );
     
-    // Execute sale (sell 100% of holdings)
-    const sellResult = await sellToken(userId, tokenInfo, 100);
+    // Execute sale
+    const sellResult = await sellToken(userId, tokenInfo, sellPercentage);
     
     if (sellResult.success) {
       // Update trading state with sale info
-      userListener.totalReturned = sellResult.amountReceived || 0;
+      const partialReturn = sellResult.amountReceived || 0;
       
-      // Calculate profit/loss
-      const invested = userListener.totalInvested || 0;
-      const returned = userListener.totalReturned || 0; // Use 0 if null
-      const profit = returned - invested;
-      const profitPercent = invested > 0 ? (profit / invested) * 100 : 0;
-      
-      // Get SOL price in USD
-      const solPriceUsd = await getSolPriceUsd();
-      const profitUsd = profit * solPriceUsd;
-      
-      // Add to profit history
-      userListener.profitHistory.push({
-        tokenAddress,
-        buyPrice: entryPrice,
-        sellPrice: sellResult.exitPrice || 0,
-        profit,
-        profitPercent,
-        timestamp: Date.now()
-      });
-      
-      // Update consecutive wins/losses
-      if (profit > 0) {
-        userListener.consecutiveWins++;
-        userListener.consecutiveLosses = 0;
-      } else {
-        userListener.consecutiveLosses++;
-        userListener.consecutiveWins = 0;
-      }
-      
-      // Reset trading state
-      userListener.tradeState = 'waiting';
-      userListener.tokenAddress = null;
-      userListener.entryPrice = null;
-      userListener.amountPurchased = null;
-      userListener.totalInvested = null;
-      userListener.highestPrice = null;
-      userListener.initialPrice = null;
-      
-      // Notify user of successful sale
-      await notifyUserById(
-        userId,
-        `${profit >= 0 ? '✅' : '⚠️'} <b>AUTO-TRADE: SELL COMPLETE</b> 
+      // If we sold 100%, reset everything. Otherwise, update partial sale info
+      if (sellPercentage === 100) {
+        userListener.totalReturned = partialReturn;
         
+        // Calculate profit/loss
+        const invested = userListener.totalInvested || 0;
+        const returned = userListener.totalReturned || 0;
+        const profit = returned - invested;
+        const profitPercent = invested > 0 ? (profit / invested) * 100 : 0;
+        
+        // Get SOL price in USD
+        const solPriceUsd = await getSolPriceUsd();
+        const profitUsd = profit * solPriceUsd;
+        
+        // Add to profit history
+        userListener.profitHistory.push({
+          tokenAddress,
+          buyPrice: entryPrice,
+          sellPrice: sellResult.exitPrice || 0,
+          profit,
+          profitPercent,
+          timestamp: Date.now()
+        });
+        
+        // Update consecutive wins/losses
+        if (profit > 0) {
+          userListener.consecutiveWins++;
+          userListener.consecutiveLosses = 0;
+        } else {
+          userListener.consecutiveLosses++;
+          userListener.consecutiveWins = 0;
+        }
+        
+        // Reset trading state
+        userListener.tradeState = 'waiting';
+        userListener.tokenAddress = null;
+        userListener.entryPrice = null;
+        userListener.amountPurchased = null;
+        userListener.totalInvested = null;
+        userListener.highestPrice = null;
+        userListener.initialPrice = null;
+        
+        // Notify user of successful sale
+        await notifyUserById(
+          userId,
+          `${profit >= 0 ? '✅' : '⚠️'} <b>AUTO-TRADE: SELL COMPLETE</b> 
+          
 <b>${tokenName} (${tokenSymbol})</b>
 <b>Amount Received:</b> ${sellResult.amountReceived?.toFixed(4)} SOL
 <b>Tokens Sold:</b> ${sellResult.tokensSold?.toLocaleString()}
@@ -2541,10 +2575,53 @@ const executeSell = async (userId: number): Promise<void> => {
 <b>USD Value:</b> $${profitUsd.toFixed(2)} USD
 
 <i>Looking for next trading opportunity...</i>
-        `
-      );
+          `
+        );
+      } else {
+        // For partial sales, keep holding position but update stats
+        const partialTokensSold = sellResult.tokensSold || 0;
+        const partialProfit = partialReturn - ((userListener.totalInvested || 0) * (sellPercentage / 100));
+        const partialProfitPercent = profitPercent; // This is the same percentage gain
+        
+        // Get SOL price in USD
+        const solPriceUsd = await getSolPriceUsd();
+        const partialProfitUsd = partialProfit * solPriceUsd;
+        
+        // Add to profit history but mark as partial
+        userListener.profitHistory.push({
+          tokenAddress,
+          buyPrice: entryPrice,
+          sellPrice: sellResult.exitPrice || 0,
+          profit: partialProfit,
+          profitPercent: partialProfitPercent,
+          timestamp: Date.now(),
+          isPartial: true,
+          percentageSold: sellPercentage
+        });
+        
+        // Update user state to reflect the partial sale
+        userListener.tradeState = 'holding'; // Still holding remaining position
+        userListener.amountPurchased = (userListener.amountPurchased || 0) * (1 - (sellPercentage / 100));
+        userListener.totalInvested = (userListener.totalInvested || 0) * (1 - (sellPercentage / 100));
+        
+        // Notify user of successful partial sale
+        await notifyUserById(
+          userId,
+          `✅ <b>AUTO-TRADE: PARTIAL SELL (${sellPercentage}%)</b> 
+          
+<b>${tokenName} (${tokenSymbol})</b>
+<b>Amount Received:</b> ${partialReturn.toFixed(4)} SOL
+<b>Tokens Sold:</b> ${partialTokensSold.toLocaleString()}
+<b>Exit Price:</b> $${sellResult.exitPrice?.toFixed(8)}
+<b>Partial Profit:</b> ${partialProfit.toFixed(4)} SOL (${partialProfitPercent.toFixed(2)}%)
+<b>USD Value:</b> $${partialProfitUsd.toFixed(2)} USD
+
+<i>Still holding ${100-sellPercentage}% of position. Monitoring for next sell opportunity...</i>
+          `
+        );
+      }
       
-      logger.info(`Auto-trade: Successfully sold ${tokenName} (${tokenSymbol}) for user ${userId} with ${profitPercent.toFixed(2)}% ${profit >= 0 ? 'profit' : 'loss'}`);
+      logger.info(`Auto-trade: Successfully sold ${sellPercentage}% of ${tokenName} (${tokenSymbol}) for user ${userId} with ${profitPercent.toFixed(2)}% ${profitPercent >= 0 ? 'profit' : 'loss'}`);
     } else {
       // If sale failed, reset state back to holding
       userListener.tradeState = 'holding';
