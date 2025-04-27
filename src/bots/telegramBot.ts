@@ -44,7 +44,8 @@ import {
   handlePumpFunStopLoss,
   handlePumpFunMaxHoldTime,
   handlePumpFunSlippage,
-  handlePumpFunPriorityFee
+  handlePumpFunPriorityFee,
+  handlePumpFunDiagnostics
 } from '../controllers/pumpFunController';
 
 import { PublicKey } from '@solana/web3.js';
@@ -214,6 +215,8 @@ Please choose an option:
 /stop_pumpfun - Stop Pump.fun listener
 /start_pumpfun_trading - Start automated Pump.fun trading
 /pumpfun_settings - Configure Pump.fun trading settings
+/pumpfun_status - Check trading status and performance
+/pumpfun_diagnose - Run network diagnostics for Pump.fun connectivity
 
 /help - Show available commands
     `;
@@ -247,6 +250,7 @@ Please choose an option:
 /pumpfun_settings - Manage Pump.fun trading settings
 /pumpfun_status - View current Pump.fun status and trades
 /pumpfun_token_filter - Set name/symbol filter for Pump.fun tokens
+/pumpfun_diagnose - Run network diagnostics for Pump.fun connectivity
     `;
     await ctx.reply(helpMessage, { parse_mode: 'HTML' });
   });
@@ -292,6 +296,7 @@ Please choose an option:
   bot.command('pumpfun_max_hold_time', handlePumpFunMaxHoldTime);
   bot.command('pumpfun_slippage', handlePumpFunSlippage);
   bot.command('pumpfun_priority_fee', handlePumpFunPriorityFee);
+  bot.command('pumpfun_diagnose', handlePumpFunDiagnostics);
 
   // Handle text input for setting boost amount, buy amount, and confirmations
   bot.on('message:text', async (ctx) => {

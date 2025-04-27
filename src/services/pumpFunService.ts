@@ -6,6 +6,11 @@ import { notifyUserById } from '../bots/telegramBot';
 import { getUserWallet, loadUserKeypair } from './walletService';
 import axios from 'axios';
 import WebSocket from 'ws';
+import dns from 'dns';
+import { promisify } from 'util';
+
+// Promisify dns.lookup for easier usage
+const dnsLookup = promisify(dns.lookup);
 
 // Constants for Pump.fun
 const PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
@@ -19,6 +24,9 @@ const activeListeners: Map<number, {
   wsConnection: WebSocket | null;
   intervalId: NodeJS.Timeout | null;
   optimizationIntervalId?: NodeJS.Timeout;
+  heartbeatIntervalId?: NodeJS.Timeout;
+  lastMessageTimestamp: number;
+  connectionHealthCheckId?: NodeJS.Timeout;
   settings: PumpFunSettings;
   status: 'idle' | 'monitoring' | 'trading';
   recentTokens: Set<string>;
@@ -278,73 +286,221 @@ async function connectToPumpFunWebSocket(userId: number): Promise<void> {
       listener.wsConnection.close();
     }
 
-    // Use pump.fun's WebSocket API via a public gateway
-    const ws = new WebSocket('wss://socket.pump.fun/socket');
+    // Clear any existing heartbeat interval
+    if (listener.heartbeatIntervalId) {
+      clearInterval(listener.heartbeatIntervalId);
+      listener.heartbeatIntervalId = undefined;
+    }
 
-    // Setup event handlers
-    ws.on('open', () => {
-      logger.info(`WebSocket connection opened for user ${userId}`);
-      notifyUserById(userId, `🔌 Connected to Pump.fun WebSocket API`);
+    // Clear any existing health check interval
+    if (listener.connectionHealthCheckId) {
+      clearInterval(listener.connectionHealthCheckId);
+      listener.connectionHealthCheckId = undefined;
+    }
+
+    // Try multiple connection endpoints in case one fails
+    const endpoints = [
+      'wss://socket.pump.fun/socket',
+      'wss://api.pump.fun/socket',
+      'wss://www.pump.fun/socket',
+      'wss://pump.fun/socket',
+      'wss://socket.pump.fun:443/socket' // Try explicitly setting port 443
+    ];
+    
+    let connected = false;
+    let lastError = null;
+    
+    // Try each endpoint until one succeeds
+    for (const endpoint of endpoints) {
+      if (connected) break;
       
-      // Subscribe to new token events
-      ws.send(JSON.stringify({
-        type: 'subscribe',
-        channel: 'tokens:new'
-      }));
-    });
-
-    ws.on('message', async (data: WebSocket.Data) => {
       try {
-        const message = JSON.parse(data.toString());
+        logger.info(`Attempting to connect to ${endpoint} for user ${userId}`);
+        const ws = new WebSocket(endpoint, {
+          handshakeTimeout: 10000, // 10 seconds timeout for handshake
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          },
+          // Force IPv4 if needed
+          // family: 4
+        });
         
-        // Check if it's a new token event
-        if (message.type === 'new_token' && message.data && message.data.mint) {
-          const tokenMint = message.data.mint;
+        // Create a promise that resolves on connection or rejects on error
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('Connection timeout'));
+            ws.terminate();
+          }, 15000);
           
-          // Skip if we've already seen this token
-          if (listener.recentTokens.has(tokenMint)) {
-            return;
+          ws.on('open', () => {
+            clearTimeout(timeout);
+            resolve(true);
+          });
+          
+          ws.on('error', (error) => {
+            clearTimeout(timeout);
+            reject(error);
+          });
+        });
+        
+        // If we get here, connection succeeded
+        connected = true;
+        
+        // Update last message timestamp
+        listener.lastMessageTimestamp = Date.now();
+        
+        // Setup event handlers
+        ws.on('open', () => {
+          logger.info(`WebSocket connection opened for user ${userId} at ${endpoint}`);
+          notifyUserById(userId, `🔌 Connected to Pump.fun WebSocket API`);
+          
+          // Subscribe to new token events
+          ws.send(JSON.stringify({
+            type: 'subscribe',
+            channel: 'tokens:new'
+          }));
+
+          // Setup heartbeat ping to keep connection alive (every 30 seconds)
+          listener.heartbeatIntervalId = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              logger.debug(`Sending heartbeat ping for user ${userId}`);
+              ws.ping();
+              
+              // Also send subscription message periodically to keep connection active
+              try {
+                ws.send(JSON.stringify({ 
+                  type: 'ping',
+                  timestamp: Date.now()
+                }));
+              } catch (err: any) {
+                logger.warn(`Error sending heartbeat message: ${err.message}`);
+              }
+            }
+          }, 30000);
+
+          // Setup health check to detect stale connections (check every minute)
+          listener.connectionHealthCheckId = setInterval(() => {
+            const now = Date.now();
+            const minutesSinceLastMessage = (now - listener.lastMessageTimestamp) / (1000 * 60);
+            
+            // If no message received for 5 minutes, consider connection stale
+            if (minutesSinceLastMessage > 5) {
+              logger.warn(`No messages received for ${minutesSinceLastMessage.toFixed(1)} minutes for user ${userId}. Reconnecting...`);
+              
+              // Notify user of stale connection
+              notifyUserById(userId, `⚠️ No messages received from Pump.fun for ${minutesSinceLastMessage.toFixed(0)} minutes. Reconnecting...`);
+              
+              // Force reconnection
+              ws.terminate();
+              
+              // Reconnect with slight delay
+              setTimeout(() => {
+                if (activeListeners.has(userId)) {
+                  connectToPumpFunWebSocket(userId);
+                }
+              }, 1000);
+            }
+          }, 60000);
+        });
+
+        ws.on('message', async (data: WebSocket.Data) => {
+          try {
+            // Update last message timestamp
+            listener.lastMessageTimestamp = Date.now();
+            
+            const message = JSON.parse(data.toString());
+            
+            // Check if it's a new token event
+            if (message.type === 'new_token' && message.data && message.data.mint) {
+              const tokenMint = message.data.mint;
+              
+              // Skip if we've already seen this token
+              if (listener.recentTokens.has(tokenMint)) {
+                return;
+              }
+              
+              // Add to recent tokens set
+              listener.recentTokens.add(tokenMint);
+              
+              // Process the new token
+              await processNewToken(userId, tokenMint);
+            }
+            // We also handle pong responses to update timestamps
+            else if (message.type === 'pong' || message.type === 'ping') {
+              logger.debug(`Received ${message.type} from server for user ${userId}`);
+            }
+          } catch (error: any) {
+            logger.error(`Error processing WebSocket message: ${error.message}`);
+          }
+        });
+
+        // Handle pong responses
+        ws.on('pong', () => {
+          // Update last message timestamp
+          listener.lastMessageTimestamp = Date.now();
+          logger.debug(`Received pong from server for user ${userId}`);
+        });
+
+        ws.on('error', (error) => {
+          logger.error(`WebSocket error for user ${userId}: ${error.message}`);
+          notifyUserById(userId, `⚠️ WebSocket connection error: ${error.message}`);
+          
+          // Attempt to reconnect after a delay
+          setTimeout(() => {
+            if (activeListeners.has(userId)) {
+              connectToPumpFunWebSocket(userId);
+            }
+          }, 5000);
+        });
+
+        ws.on('close', () => {
+          logger.info(`WebSocket connection closed for user ${userId}`);
+          
+          // Clear heartbeat interval
+          if (listener.heartbeatIntervalId) {
+            clearInterval(listener.heartbeatIntervalId);
+            listener.heartbeatIntervalId = undefined;
           }
           
-          // Add to recent tokens set
-          listener.recentTokens.add(tokenMint);
+          // Clear health check interval
+          if (listener.connectionHealthCheckId) {
+            clearInterval(listener.connectionHealthCheckId);
+            listener.connectionHealthCheckId = undefined;
+          }
           
-          // Process the new token
-          await processNewToken(userId, tokenMint);
-        }
+          // Attempt to reconnect after a delay, but only if it wasn't terminated by user action
+          setTimeout(() => {
+            if (activeListeners.has(userId)) {
+              connectToPumpFunWebSocket(userId);
+            }
+          }, 5000);
+        });
+
+        // Save the WebSocket connection
+        listener.wsConnection = ws;
+        
       } catch (error: any) {
-        logger.error(`Error processing WebSocket message: ${error.message}`);
+        // Log the error but continue to try other endpoints
+        lastError = error;
+        logger.warn(`Failed to connect to ${endpoint}: ${error.message}`);
       }
-    });
-
-    ws.on('error', (error) => {
-      logger.error(`WebSocket error for user ${userId}: ${error.message}`);
-      notifyUserById(userId, `⚠️ WebSocket connection error: ${error.message}`);
-      
-      // Attempt to reconnect after a delay
-      setTimeout(() => {
-        if (activeListeners.has(userId)) {
-          connectToPumpFunWebSocket(userId);
-        }
-      }, 5000);
-    });
-
-    ws.on('close', () => {
-      logger.info(`WebSocket connection closed for user ${userId}`);
-      
-      // Attempt to reconnect after a delay
-      setTimeout(() => {
-        if (activeListeners.has(userId)) {
-          connectToPumpFunWebSocket(userId);
-        }
-      }, 5000);
-    });
-
-    // Save the WebSocket connection
-    listener.wsConnection = ws;
+    }
+    
+    // If we couldn't connect to any endpoint, throw the last error
+    if (!connected && lastError) {
+      throw lastError;
+    }
+    
   } catch (error: any) {
     logger.error(`Error setting up WebSocket for user ${userId}: ${error.message}`);
-    throw error;
+    notifyUserById(userId, `⚠️ Could not connect to Pump.fun. Please try again later or check if service is available.`);
+    
+    // Set a retry after some time
+    setTimeout(() => {
+      if (activeListeners.has(userId)) {
+        connectToPumpFunWebSocket(userId);
+      }
+    }, 30000); // Retry after 30 seconds
   }
 }
 
@@ -725,11 +881,139 @@ async function sellToken(
 }
 
 /**
- * Start listening for new Pump.fun tokens
- * @param userId The user ID
- * @param settings Optional custom settings
+ * Check if pump.fun services are reachable
+ * @returns A boolean indicating whether the service is reachable
  */
+async function isPumpFunReachable(): Promise<boolean> {
+  try {
+    // First, try to resolve the domain
+    try {
+      await dnsLookup('socket.pump.fun');
+      logger.info('Domain socket.pump.fun successfully resolved');
+    } catch (error: any) {
+      logger.warn('Cannot resolve socket.pump.fun domain, will try alternative domains');
+      
+      // Try alternative domains
+      try {
+        await dnsLookup('api.pump.fun');
+        logger.info('Domain api.pump.fun successfully resolved');
+      } catch (error: any) {
+        try {
+          await dnsLookup('pump.fun');
+          logger.info('Domain pump.fun successfully resolved');
+        } catch (error: any) {
+          logger.error('All pump.fun domains failed to resolve');
+          return false;
+        }
+      }
+    }
+    
+    // Then try to connect to the API to check if service is up
+    try {
+      const response = await axios.get('https://pump.fun/api/health', {
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      if (response.status === 200) {
+        logger.info('Pump.fun API is reachable');
+        return true;
+      }
+    } catch (error: any) {
+      logger.warn('Could not connect to Pump.fun API health endpoint');
+    }
+    
+    // If API health check fails, try a simple HTTP request
+    try {
+      const response = await axios.get('https://pump.fun', {
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      if (response.status === 200) {
+        logger.info('Pump.fun website is reachable');
+        return true;
+      }
+    } catch (error: any) {
+      logger.error('Could not connect to Pump.fun website');
+    }
+    
+    return false;
+  } catch (error: any) {
+    logger.error(`Error checking Pump.fun reachability: ${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * Verify wallet has enough funds before trading
+ * @param userId The user ID
+ * @returns A promise that resolves with a boolean indicating if wallet has sufficient funds
+ */
+async function verifyWalletForTrading(userId: number): Promise<boolean> {
+  try {
+    // Get user wallet
+    const userWallet = await getUserWallet(userId);
+    if (!userWallet) {
+      logger.error(`No wallet found for user ${userId}`);
+      return false;
+    }
+    
+    // Load keypair
+    const keypair = loadUserKeypair(userWallet.encryptedPrivateKey);
+    
+    // Create connection
+    const connection = new Connection(config.solanaRpcUrl, 'confirmed');
+    
+    // Get wallet balance
+    const balance = await connection.getBalance(keypair.publicKey);
+    const balanceInSol = balance / LAMPORTS_PER_SOL;
+    
+    // Get settings
+    const listener = activeListeners.get(userId);
+    if (!listener) {
+      logger.error(`No active listener for user ${userId}`);
+      return false;
+    }
+    
+    // Check if balance is sufficient for at least one buy
+    const requiredBalance = listener.settings.buyAmount * 1.1; // Add 10% for fees
+    
+    if (balanceInSol < requiredBalance) {
+      logger.warn(`Insufficient balance for user ${userId}. Has ${balanceInSol} SOL, needs ${requiredBalance} SOL`);
+      notifyUserById(userId, `⚠️ Your wallet balance (${balanceInSol.toFixed(4)} SOL) is insufficient for trading. You need at least ${requiredBalance.toFixed(4)} SOL to trade.`);
+      return false;
+    }
+    
+    logger.info(`Wallet verified for user ${userId}. Balance: ${balanceInSol} SOL`);
+    return true;
+  } catch (error: any) {
+    logger.error(`Error verifying wallet for user ${userId}: ${error.message}`);
+    return false;
+  }
+}
+
+// Modify startPumpFunListener to include wallet verification
 export async function startPumpFunListener(userId: number, settings?: Partial<PumpFunSettings>): Promise<void> {
+  // Check if pump.fun is reachable
+  const isReachable = await isPumpFunReachable();
+  
+  if (!isReachable) {
+    logger.error(`Cannot start Pump.fun listener for user ${userId} - service unreachable`);
+    throw new Error('Cannot connect to Pump.fun service. Please check your internet connection or try again later.');
+  }
+  
+  // Verify wallet exists
+  const userWallet = await getUserWallet(userId);
+  if (!userWallet) {
+    logger.error(`No wallet found for user ${userId} when starting Pump.fun listener`);
+    throw new Error('You need to set up a wallet first. Use /wallet to create one.');
+  }
+  
   // Stop existing listener if any
   stopPumpFunListener(userId);
   
@@ -743,6 +1027,7 @@ export async function startPumpFunListener(userId: number, settings?: Partial<Pu
   activeListeners.set(userId, {
     wsConnection: null,
     intervalId: null,
+    lastMessageTimestamp: Date.now(),
     settings: listenerSettings,
     status: 'monitoring', // Start in monitoring mode
     recentTokens: new Set<string>(),
@@ -758,14 +1043,17 @@ export async function startPumpFunListener(userId: number, settings?: Partial<Pu
   logger.info(`Started Pump.fun listener for user ${userId}`);
 }
 
-/**
- * Start trading Pump.fun tokens
- * @param userId The user ID
- */
+// Modify startPumpFunTrading to include wallet verification
 export async function startPumpFunTrading(userId: number): Promise<void> {
   const listener = activeListeners.get(userId);
   if (!listener) {
-    throw new Error("Please start the listener first with /start_listener");
+    throw new Error("Please start the listener first with /start_pumpfun");
+  }
+  
+  // Verify wallet has sufficient funds
+  const walletValid = await verifyWalletForTrading(userId);
+  if (!walletValid) {
+    throw new Error("Your wallet doesn't have sufficient funds to start trading. Please add SOL to your wallet and try again.");
   }
   
   // Update status to trading
@@ -780,10 +1068,7 @@ export async function startPumpFunTrading(userId: number): Promise<void> {
   logger.info(`Started Pump.fun trading for user ${userId}`);
 }
 
-/**
- * Stop the Pump.fun listener
- * @param userId The user ID
- */
+// Enhance stopPumpFunListener to clean up all intervals
 export function stopPumpFunListener(userId: number): void {
   const listener = activeListeners.get(userId);
   if (!listener) {
@@ -795,9 +1080,21 @@ export function stopPumpFunListener(userId: number): void {
     listener.wsConnection.close();
   }
   
-  // Clear interval
+  // Clear all intervals
   if (listener.intervalId) {
     clearInterval(listener.intervalId);
+  }
+  
+  if (listener.optimizationIntervalId) {
+    clearInterval(listener.optimizationIntervalId);
+  }
+  
+  if (listener.heartbeatIntervalId) {
+    clearInterval(listener.heartbeatIntervalId);
+  }
+  
+  if (listener.connectionHealthCheckId) {
+    clearInterval(listener.connectionHealthCheckId);
   }
   
   // Remove listener
@@ -1089,4 +1386,176 @@ export function setupAutoOptimization(userId: number): void {
   
   // Store the interval ID
   listener.optimizationIntervalId = optimizationInterval;
+}
+
+// Export activeListeners map for diagnostic purposes
+export { activeListeners };
+
+/**
+ * Get WebSocket connection state for a user
+ * @param userId User ID to check connection for
+ * @returns Connection state information
+ */
+export function getPumpFunConnectionState(userId: number): {
+  connected: boolean;
+  readyState?: number;
+  lastMessageTimestamp?: number;
+  endpoint?: string;
+} {
+  const listener = activeListeners.get(userId);
+  if (!listener || !listener.wsConnection) {
+    return { connected: false };
+  }
+
+  return {
+    connected: listener.wsConnection.readyState === WebSocket.OPEN,
+    readyState: listener.wsConnection.readyState,
+    lastMessageTimestamp: listener.lastMessageTimestamp,
+    endpoint: listener.wsConnection.url
+  };
+}
+
+/**
+ * Run diagnostics on WebSocket connection
+ * @param userId User ID to run diagnostics for
+ * @returns Diagnostic results
+ */
+export async function runPumpFunDiagnostics(userId: number): Promise<{
+  dns: boolean;
+  dnsResults: string[];
+  http: boolean;
+  websocket: boolean;
+  connectionState?: {
+    connected: boolean;
+    readyState?: number;
+    lastMessageTimestamp?: number;
+  } | undefined;
+  errorMessage?: string | undefined;
+}> {
+  const results: {
+    dns: boolean;
+    dnsResults: string[];
+    http: boolean;
+    websocket: boolean;
+    connectionState?: {
+      connected: boolean;
+      readyState?: number;
+      lastMessageTimestamp?: number;
+    };
+    errorMessage?: string;
+  } = {
+    dns: false,
+    dnsResults: [],
+    http: false,
+    websocket: false
+  };
+
+  try {
+    // Test DNS resolution
+    try {
+      const domains = ['socket.pump.fun', 'api.pump.fun', 'pump.fun'];
+      for (const domain of domains) {
+        try {
+          const resolved = await dnsLookup(domain);
+          results.dnsResults.push(`✅ ${domain} resolves to ${resolved.address}`);
+          results.dns = true;
+        } catch (error: any) {
+          results.dnsResults.push(`❌ ${domain} resolution failed: ${error.message}`);
+        }
+      }
+    } catch (error: any) {
+      results.dnsResults.push(`❌ DNS resolution test failed: ${error.message}`);
+    }
+
+    // Test HTTP connectivity
+    try {
+      const response = await axios.get('https://pump.fun', {
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      if (response.status === 200) {
+        results.http = true;
+      }
+    } catch (error: any) {
+      results.errorMessage = `HTTP test failed: ${error.message}`;
+    }
+
+    // Check WebSocket state for this user
+    const listener = activeListeners.get(userId);
+    if (listener && listener.wsConnection) {
+      results.connectionState = {
+        connected: listener.wsConnection.readyState === WebSocket.OPEN,
+        readyState: listener.wsConnection.readyState,
+        lastMessageTimestamp: listener.lastMessageTimestamp
+      };
+      
+      if (listener.wsConnection.readyState === WebSocket.OPEN) {
+        results.websocket = true;
+      }
+    }
+    
+    // If no active connection, test creating a temporary one
+    if (!results.websocket) {
+      try {
+        // Try to open a temporary WebSocket connection
+        const tempResult = await testWebSocketConnection();
+        results.websocket = tempResult.success;
+        if (!tempResult.success && tempResult.error) {
+          results.errorMessage = tempResult.error;
+        }
+      } catch (error: any) {
+        results.errorMessage = `WebSocket test failed: ${error.message}`;
+      }
+    }
+
+    return results;
+  } catch (error: any) {
+    logger.error(`Error running diagnostics: ${error.message}`);
+    return {
+      ...results,
+      errorMessage: `Diagnostic error: ${error.message}`
+    };
+  }
+}
+
+/**
+ * Test WebSocket connection to pump.fun
+ * @returns Test result
+ */
+async function testWebSocketConnection(): Promise<{ success: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    try {
+      // Close after 5 seconds regardless of outcome
+      const timeout = setTimeout(() => {
+        if (ws.readyState === WebSocket.CONNECTING) {
+          ws.terminate();
+          resolve({ success: false, error: 'Connection timeout' });
+        }
+      }, 5000);
+      
+      const ws = new WebSocket('wss://socket.pump.fun/socket', {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      ws.on('open', () => {
+        clearTimeout(timeout);
+        // Close the test connection
+        ws.close();
+        resolve({ success: true });
+      });
+      
+      ws.on('error', (error) => {
+        clearTimeout(timeout);
+        ws.terminate();
+        resolve({ success: false, error: error.message });
+      });
+    } catch (error: any) {
+      resolve({ success: false, error: error.message });
+    }
+  });
 } 

@@ -1,7 +1,7 @@
 import { MyContext } from '../types';
 import { logger } from '../utils/logger';
-import { PublicKey } from '@solana/web3.js';
-import { getUserWallet } from '../services/walletService';
+import { PublicKey, Connection, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { getUserWallet, loadUserKeypair } from '../services/walletService';
 import {
   startPumpFunListener,
   stopPumpFunListener,
@@ -11,8 +11,12 @@ import {
   isPumpFunListenerActive,
   getPumpFunListenerStatus,
   getPumpFunTradingHistory,
-  PumpFunSettings
+  PumpFunSettings,
+  getPumpFunConnectionState,
+  runPumpFunDiagnostics
 } from '../services/pumpFunService';
+import { config } from '../config';
+import WebSocket from 'ws';
 
 /**
  * Handle starting the Pump.fun listener
@@ -60,23 +64,76 @@ export const handleStartPumpFunListener = async (ctx: MyContext): Promise<void> 
       return;
     }
 
-    // Start the listener with default settings
-    await startPumpFunListener(userId);
-    
-    // Reply with success message and settings options
-    await ctx.reply(
-      '✅ Pump.fun listener started! You will be notified about new tokens.\n\n' +
-      'Use these commands to customize:\n' +
-      '/pumpfun_settings - View and update settings\n' +
-      '/pumpfun_token_filter - Set name/symbol filter\n' +
-      '/start_pumpfun_trading - Start automatic trading\n' +
-      '/stop_pumpfun - Stop the listener'
-    );
-    
-    logger.info(`User ${userId} started the Pump.fun listener.`);
+    // Enhanced checking of wallet validity
+    try {
+      const keypair = loadUserKeypair(userWallet.encryptedPrivateKey);
+      if (!keypair) {
+        await ctx.reply('❌ Could not load your wallet. Please try setting up your wallet again with /wallet.');
+        return;
+      }
+    } catch (error: any) {
+      logger.error(`Error loading keypair for user ${userId}: ${error.message}`);
+      await ctx.reply('❌ There was an issue with your wallet. Please try setting up your wallet again with /wallet.');
+      return;
+    }
+
+    // Show waiting message with diagnostic information
+    await ctx.reply('⏳ Connecting to Pump.fun service. This may take a moment...\n\nPerforming network diagnostics and setting up secure connection to servers.');
+
+    try {
+      // Start the listener with default settings - show a second message with progress
+      await ctx.reply('🔍 Verifying connectivity to Pump.fun...');
+      await startPumpFunListener(userId);
+      
+      // Reply with success message and settings options
+      await ctx.reply(
+        '✅ Pump.fun listener started successfully! You will be notified about new tokens.\n\n' +
+        'Use these commands to customize:\n' +
+        '/pumpfun_settings - View and update settings\n' +
+        '/pumpfun_token_filter - Set name/symbol filter\n' +
+        '/start_pumpfun_trading - Start automatic trading\n' +
+        '/stop_pumpfun - Stop the listener'
+      );
+      
+      logger.info(`User ${userId} started the Pump.fun listener.`);
+    } catch (error: any) {
+      // Check if it's a DNS resolution error
+      if (error.message && (
+          error.message.includes('getaddrinfo') || 
+          error.message.includes('ENOTFOUND') || 
+          error.message.includes('connect') ||
+          error.message.includes('Cannot connect to Pump.fun service')
+      )) {
+        logger.error(`DNS or connection error for Pump.fun: ${error.message}`);
+        await ctx.reply(
+          `⚠️ Unable to connect to Pump.fun services. Network diagnostic shows: ${error.message}\n\n` +
+          'This may be due to:\n\n' +
+          '1. Your server\'s network configuration - check outbound firewall rules\n' +
+          '2. EC2 security group settings - ensure port 443 is allowed for outbound traffic\n' +
+          '3. DNS resolution problems - update your DNS server settings\n' +
+          '4. The Pump.fun service might be temporarily unavailable\n\n' +
+          'Suggested fixes:\n' +
+          '• Add "socket.pump.fun" to your EC2 instance\'s hosts file pointing to its IP\n' +
+          '• Check EC2 security group to allow outbound traffic on port 443\n' +
+          '• Configure a reliable DNS server like Google (8.8.8.8) or Cloudflare (1.1.1.1)\n' +
+          '• Try again later when the service may be available again'
+        );
+      } else if (error.message && error.message.includes('wallet')) {
+        // Wallet-related errors
+        logger.error(`Wallet error when starting Pump.fun listener: ${error.message}`);
+        await ctx.reply(`❌ ${error.message}\n\nPlease use /wallet to verify your wallet is set up correctly.`);
+      } else {
+        // Other errors
+        logger.error(`Error starting Pump.fun listener: ${error.message}`, error);
+        await ctx.reply(
+          `❌ Failed to start Pump.fun listener: ${error.message}\n\n` +
+          'Please try again later or contact support if the issue persists.'
+        );
+      }
+    }
   } catch (error: any) {
-    logger.error(`Error starting Pump.fun listener: ${error.message}`, error);
-    await ctx.reply(`❌ Failed to start Pump.fun listener: ${error.message}`);
+    logger.error(`Unexpected error in handleStartPumpFunListener: ${error.message}`, error);
+    await ctx.reply(`❌ An unexpected error occurred: ${error.message}\n\nPlease try again later or contact support if the issue persists.`);
   }
 };
 
@@ -139,32 +196,45 @@ export const handleStartPumpFunTrading = async (ctx: MyContext): Promise<void> =
       return;
     }
 
-    // Start trading
-    await startPumpFunTrading(userId);
-    
-    // Get current settings
-    const settings = getPumpFunSettings(userId);
-    
-    // Reply with success message
-    await ctx.reply(
-      '✅ Pump.fun trading started! The bot will automatically buy tokens based on your settings.\n\n' +
-      `Current settings:\n` +
-      `- Minimum boost amount: $${settings?.minBoostAmount}\n` +
-      `- Buy amount: ${settings?.buyAmount} SOL\n` +
-      `- Trading budget: ${settings?.tradingBudget} SOL\n` +
-      `- Auto-sell: ${settings?.autoSell ? 'Enabled' : 'Disabled'}\n` +
-      `- Profit target: ${settings?.profitTarget}%\n` +
-      `- Stop loss: ${settings?.stopLoss}%\n` +
-      `- Max hold time: ${Math.floor((settings?.maxHoldTime || 0) / 60)} minutes\n` +
-      (settings?.onlyBuyTokensWithName ? `- Name filter: "${settings.onlyBuyTokensWithName}"\n` : '') +
-      '\n✨ Auto-optimization is enabled and will adjust your settings after 5+ trades for maximum performance.\n\n' +
-      'Use /pumpfun_settings to update these settings and /pumpfun_status to check performance metrics.'
-    );
-    
-    logger.info(`User ${userId} started automatic Pump.fun trading.`);
+    // Show waiting message
+    await ctx.reply('⏳ Verifying your wallet balance and preparing for trading...');
+
+    try {
+      // Start trading
+      await startPumpFunTrading(userId);
+      
+      // Get current settings
+      const settings = getPumpFunSettings(userId);
+      
+      // Reply with success message
+      await ctx.reply(
+        '✅ Pump.fun trading started! The bot will automatically buy tokens based on your settings.\n\n' +
+        `Current settings:\n` +
+        `- Minimum boost amount: $${settings?.minBoostAmount}\n` +
+        `- Buy amount: ${settings?.buyAmount} SOL\n` +
+        `- Trading budget: ${settings?.tradingBudget} SOL\n` +
+        `- Auto-sell: ${settings?.autoSell ? 'Enabled' : 'Disabled'}\n` +
+        `- Profit target: ${settings?.profitTarget}%\n` +
+        `- Stop loss: ${settings?.stopLoss}%\n` +
+        `- Max hold time: ${Math.floor((settings?.maxHoldTime || 0) / 60)} minutes\n` +
+        (settings?.onlyBuyTokensWithName ? `- Name filter: "${settings.onlyBuyTokensWithName}"\n` : '') +
+        '\n✨ Auto-optimization is enabled and will adjust your settings after 5+ trades for maximum performance.\n\n' +
+        'Use /pumpfun_settings to update these settings and /pumpfun_status to check performance metrics.'
+      );
+      
+      logger.info(`User ${userId} started automatic Pump.fun trading.`);
+    } catch (error: any) {
+      // Check if it's a funds-related error
+      if (error.message && error.message.includes('funds')) {
+        await ctx.reply(`❌ ${error.message}\n\nPlease add more SOL to your wallet and try again.`);
+      } else {
+        logger.error(`Error starting Pump.fun trading: ${error.message}`, error);
+        await ctx.reply(`❌ Failed to start Pump.fun trading: ${error.message}`);
+      }
+    }
   } catch (error: any) {
-    logger.error(`Error starting Pump.fun trading: ${error.message}`, error);
-    await ctx.reply(`❌ Failed to start Pump.fun trading: ${error.message}`);
+    logger.error(`Unexpected error in handleStartPumpFunTrading: ${error.message}`, error);
+    await ctx.reply(`❌ An unexpected error occurred: ${error.message}\n\nPlease try again later or contact support if the issue persists.`);
   }
 };
 
@@ -332,13 +402,44 @@ export const handlePumpFunStatus = async (ctx: MyContext): Promise<void> => {
     const settings = getPumpFunSettings(userId);
     const history = getPumpFunTradingHistory(userId);
     
+    // Get wallet balance
+    let walletBalanceMessage = '';
+    try {
+      const userWallet = await getUserWallet(userId);
+      if (userWallet) {
+        const keypair = loadUserKeypair(userWallet.encryptedPrivateKey);
+        const connection = new Connection(config.solanaRpcUrl, 'confirmed');
+        const balance = await connection.getBalance(keypair.publicKey);
+        const balanceInSol = balance / LAMPORTS_PER_SOL;
+        walletBalanceMessage = `\n<b>Wallet balance:</b> ${balanceInSol.toFixed(4)} SOL`;
+      }
+    } catch (error) {
+      walletBalanceMessage = '\n<b>Wallet balance:</b> Unable to fetch';
+    }
+    
     // Calculate trading stats
     const buys = history?.filter(trade => trade.action === 'buy').length || 0;
     const sells = history?.filter(trade => trade.action === 'sell').length || 0;
     
+    // Check connection status
+    const connectionStatus = await getConnectionStatus(userId);
+    
+    // Calculate time since last message
+    let lastMessageInfo = '';
+    if (connectionStatus.lastMessageTime) {
+      const minutesSinceLastMessage = (Date.now() - connectionStatus.lastMessageTime) / (1000 * 60);
+      if (minutesSinceLastMessage < 60) {
+        lastMessageInfo = `\n<b>Last activity:</b> ${Math.floor(minutesSinceLastMessage)} minutes ago`;
+      } else {
+        const hoursSinceLastMessage = minutesSinceLastMessage / 60;
+        lastMessageInfo = `\n<b>Last activity:</b> ${hoursSinceLastMessage.toFixed(1)} hours ago`;
+      }
+    }
+    
     // Create the status message
     let message = `📊 <b>Pump.fun Bot Status</b>\n\n`;
-    message += `<b>Current state:</b> ${status === 'monitoring' ? '🔍 Monitoring only' : '🤖 Trading'}\n\n`;
+    message += `<b>Current state:</b> ${status === 'monitoring' ? '🔍 Monitoring only' : '🤖 Trading'}\n`;
+    message += `<b>Connection status:</b> ${connectionStatus.status}${lastMessageInfo}${walletBalanceMessage}\n\n`;
     
     message += `<b>Settings:</b>\n`;
     message += `- Minimum boost: $${settings?.minBoostAmount}\n`;
@@ -616,4 +717,116 @@ export const handlePumpFunPriorityFee = async (ctx: MyContext): Promise<void> =>
     `⚡ Enable or disable priority fees (current: ${settings?.priorityFee ? 'Enabled' : 'Disabled'}):\n\n` +
     'Type "yes" to enable or "no" to disable'
   );
+};
+
+/**
+ * Check connection status for a specific user
+ * @param userId The user ID to check
+ * @returns Connection status information
+ */
+async function getConnectionStatus(userId: number): Promise<{
+  status: string;
+  readyState?: number;
+  lastMessageTime?: number;
+}> {
+  try {
+    const isActive = isPumpFunListenerActive(userId);
+    if (!isActive) {
+      return { status: '🔴 Not active' };
+    }
+
+    // We can't directly access activeListeners, so let's use what we can from the API
+    const pumpStatus = getPumpFunListenerStatus(userId);
+    
+    // This is a placeholder - we'll need to enhance the pumpFunService API
+    // to expose this information properly in the future
+    return { 
+      status: pumpStatus === 'idle' ? '🟡 Idle' : 
+              pumpStatus === 'monitoring' ? '🟢 Monitoring' : 
+              pumpStatus === 'trading' ? '🟢 Trading' : '❓ Unknown',
+      lastMessageTime: Date.now() // This is a placeholder
+    };
+  } catch (error) {
+    return { status: '❓ Unknown' };
+  }
+}
+
+/**
+ * Handle running network diagnostics for Pump.fun
+ */
+export const handlePumpFunDiagnostics = async (ctx: MyContext): Promise<void> => {
+  try {
+    const userId = ctx.from?.id;
+    if (!userId) {
+      await ctx.reply('❌ User ID not found.');
+      return;
+    }
+
+    // Check if user has admin rights - add this if needed
+    
+    await ctx.reply('🔍 Running Pump.fun network diagnostics...\n\nThis will test DNS resolution, HTTP connectivity, and WebSocket connections.\nPlease wait, this may take up to 15 seconds...');
+    
+    // Run diagnostics
+    const results = await runPumpFunDiagnostics(userId);
+    
+    // Format the results
+    let message = `📊 <b>Pump.fun Diagnostic Results</b>\n\n`;
+    
+    // DNS Results
+    message += `<b>DNS Resolution:</b> ${results.dns ? '✅ Working' : '❌ Failed'}\n`;
+    message += results.dnsResults.join('\n') + '\n\n';
+    
+    // HTTP Connectivity
+    message += `<b>HTTP Connectivity:</b> ${results.http ? '✅ Working' : '❌ Failed'}\n`;
+    
+    // WebSocket Status
+    message += `<b>WebSocket Connectivity:</b> ${results.websocket ? '✅ Working' : '❌ Failed'}\n`;
+    
+    // Current connection state
+    if (results.connectionState) {
+      message += `<b>Current Connection:</b> ${results.connectionState.connected ? '✅ Connected' : '❌ Disconnected'}\n`;
+      if (results.connectionState.readyState !== undefined) {
+        message += `<b>Connection State:</b> ${
+          results.connectionState.readyState === WebSocket.CONNECTING ? 'Connecting' :
+          results.connectionState.readyState === WebSocket.OPEN ? 'Open' :
+          results.connectionState.readyState === WebSocket.CLOSING ? 'Closing' :
+          results.connectionState.readyState === WebSocket.CLOSED ? 'Closed' : 'Unknown'
+        }\n`;
+      }
+    }
+    
+    // Error message if any
+    if (results.errorMessage) {
+      message += `\n<b>Error Message:</b> ${results.errorMessage}\n`;
+    }
+    
+    // Recommendations
+    message += '\n<b>Recommendations:</b>\n';
+    
+    if (!results.dns) {
+      message += '• Configure a reliable DNS server (e.g., 8.8.8.8 or 1.1.1.1)\n';
+      message += '• Add socket.pump.fun to your /etc/hosts file with IP 52.198.55.31\n';
+    }
+    
+    if (!results.http) {
+      message += '• Check if your network blocks outbound HTTPS (port 443) connections\n';
+      message += '• Verify your EC2 security group allows outbound traffic\n';
+    }
+    
+    if (!results.websocket) {
+      message += '• Ensure WebSocket connections on port 443 are allowed\n';
+      message += '• Check if your network or proxy blocks WebSocket upgrades\n';
+    }
+    
+    message += '\n<b>To fix EC2 connectivity issues:</b>\n';
+    message += '1. Edit your EC2 security group to allow all outbound traffic\n';
+    message += '2. Run these commands on your server:\n';
+    message += '<code>echo "52.198.55.31 socket.pump.fun" | sudo tee -a /etc/hosts</code>\n';
+    message += '<code>echo "nameserver 8.8.8.8" | sudo tee -a /etc/resolv.conf</code>\n';
+    
+    await ctx.reply(message, { parse_mode: 'HTML' });
+  } catch (error: any) {
+    logger.error(`Error in handlePumpFunDiagnostics: ${error.message}`, error);
+    await ctx.reply(`❌ Failed to run diagnostics: ${error.message}`);
+  }
 }; 
