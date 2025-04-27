@@ -19,6 +19,14 @@ import { config } from '../config';
 import WebSocket from 'ws';
 import dns from 'dns';
 import fetch from 'node-fetch';
+import axios from 'axios';
+import https from 'https';
+import ping from 'ping';
+import { notifyUserById } from '../bots/telegramBot';
+import { promisify } from 'util';
+
+// Promisify dns.lookup for easier usage
+const dnsLookup = promisify(dns.lookup);
 
 /**
  * Handle starting the Pump.fun listener
@@ -57,7 +65,7 @@ export const handleStartPumpFunListener = async (ctx: MyContext): Promise<void> 
     // If user already has an active listener, inform them
     if (isPumpFunListenerActive(userId)) {
       await ctx.reply(
-        '❓ Pump.fun listener is already active. What would you like to do?\n\n' +
+        '❓ PumpPortal listener is already active. What would you like to do?\n\n' +
         '/pumpfun_settings - View and update settings\n' +
         '/pumpfun_status - Check current status\n' +
         '/stop_pumpfun - Stop the listener\n' +
@@ -80,16 +88,16 @@ export const handleStartPumpFunListener = async (ctx: MyContext): Promise<void> 
     }
 
     // Show waiting message with diagnostic information
-    await ctx.reply('⏳ Connecting to Pump.fun service. This may take a moment...\n\nPerforming network diagnostics and setting up secure connection to servers.');
+    await ctx.reply('⏳ Connecting to PumpPortal service. This may take a moment...\n\nPerforming network diagnostics and setting up secure connection to servers.');
 
     try {
       // Start the listener with default settings - show a second message with progress
-      await ctx.reply('🔍 Verifying connectivity to Pump.fun...');
+      await ctx.reply('🔍 Verifying connectivity to PumpPortal...');
       await startPumpFunListener(userId);
       
       // Reply with success message and settings options
       await ctx.reply(
-        '✅ Pump.fun listener started successfully! You will be notified about new tokens.\n\n' +
+        '✅ PumpPortal listener started successfully! You will be notified about new tokens.\n\n' +
         'Use these commands to customize:\n' +
         '/pumpfun_settings - View and update settings\n' +
         '/pumpfun_token_filter - Set name/symbol filter\n' +
@@ -97,38 +105,37 @@ export const handleStartPumpFunListener = async (ctx: MyContext): Promise<void> 
         '/stop_pumpfun - Stop the listener'
       );
       
-      logger.info(`User ${userId} started the Pump.fun listener.`);
+      logger.info(`User ${userId} started the PumpPortal listener.`);
     } catch (error: any) {
       // Check if it's a DNS resolution error
       if (error.message && (
           error.message.includes('getaddrinfo') || 
           error.message.includes('ENOTFOUND') || 
           error.message.includes('connect') ||
-          error.message.includes('Cannot connect to Pump.fun service')
+          error.message.includes('Cannot connect to PumpPortal service')
       )) {
-        logger.error(`DNS or connection error for Pump.fun: ${error.message}`);
+        logger.error(`DNS or connection error for PumpPortal: ${error.message}`);
         await ctx.reply(
-          `⚠️ Unable to connect to Pump.fun services. Network diagnostic shows: ${error.message}\n\n` +
+          `⚠️ Unable to connect to PumpPortal services. Network diagnostic shows: ${error.message}\n\n` +
           'This may be due to:\n\n' +
           '1. Your server\'s network configuration - check outbound firewall rules\n' +
           '2. EC2 security group settings - ensure port 443 is allowed for outbound traffic\n' +
           '3. DNS resolution problems - update your DNS server settings\n' +
-          '4. The Pump.fun service might be temporarily unavailable\n\n' +
+          '4. The PumpPortal service might be temporarily unavailable\n\n' +
           'Suggested fixes:\n' +
-          '• Add "socket.pump.fun" to your EC2 instance\'s hosts file pointing to its IP\n' +
           '• Check EC2 security group to allow outbound traffic on port 443\n' +
           '• Configure a reliable DNS server like Google (8.8.8.8) or Cloudflare (1.1.1.1)\n' +
           '• Try again later when the service may be available again'
         );
       } else if (error.message && error.message.includes('wallet')) {
         // Wallet-related errors
-        logger.error(`Wallet error when starting Pump.fun listener: ${error.message}`);
+        logger.error(`Wallet error when starting PumpPortal listener: ${error.message}`);
         await ctx.reply(`❌ ${error.message}\n\nPlease use /wallet to verify your wallet is set up correctly.`);
       } else {
         // Other errors
-        logger.error(`Error starting Pump.fun listener: ${error.message}`, error);
+        logger.error(`Error starting PumpPortal listener: ${error.message}`, error);
         await ctx.reply(
-          `❌ Failed to start Pump.fun listener: ${error.message}\n\n` +
+          `❌ Failed to start PumpPortal listener: ${error.message}\n\n` +
           'Please try again later or contact support if the issue persists.'
         );
       }
@@ -152,18 +159,18 @@ export const handleStopPumpFunListener = async (ctx: MyContext): Promise<void> =
 
     // Check if the listener is active
     if (!isPumpFunListenerActive(userId)) {
-      await ctx.reply('❌ Pump.fun listener is not active.');
+      await ctx.reply('❌ PumpPortal listener is not active.');
       return;
     }
 
     // Stop the listener
     stopPumpFunListener(userId);
     
-    await ctx.reply('✅ Pump.fun listener stopped.');
-    logger.info(`User ${userId} stopped the Pump.fun listener.`);
+    await ctx.reply('✅ PumpPortal listener stopped.');
+    logger.info(`User ${userId} stopped the PumpPortal listener.`);
   } catch (error: any) {
-    logger.error(`Error stopping Pump.fun listener: ${error.message}`, error);
-    await ctx.reply(`❌ Failed to stop Pump.fun listener: ${error.message}`);
+    logger.error(`Error stopping PumpPortal listener: ${error.message}`, error);
+    await ctx.reply(`❌ Failed to stop PumpPortal listener: ${error.message}`);
   }
 };
 
@@ -187,14 +194,14 @@ export const handleStartPumpFunTrading = async (ctx: MyContext): Promise<void> =
 
     // Check if the listener is active
     if (!isPumpFunListenerActive(userId)) {
-      await ctx.reply('❌ You need to start the Pump.fun listener first. Use /start_pumpfun to do that.');
+      await ctx.reply('❌ You need to start the PumpPortal listener first. Use /start_pumpfun to do that.');
       return;
     }
 
     // Get current status
     const status = getPumpFunListenerStatus(userId);
     if (status === 'trading') {
-      await ctx.reply('ℹ️ Pump.fun trading is already active.');
+      await ctx.reply('ℹ️ PumpPortal trading is already active.');
       return;
     }
 
@@ -210,7 +217,7 @@ export const handleStartPumpFunTrading = async (ctx: MyContext): Promise<void> =
       
       // Reply with success message
       await ctx.reply(
-        '✅ Pump.fun trading started! The bot will automatically buy tokens based on your settings.\n\n' +
+        '✅ PumpPortal trading started! The bot will automatically buy tokens based on your settings.\n\n' +
         `Current settings:\n` +
         `- Minimum boost amount: $${settings?.minBoostAmount}\n` +
         `- Buy amount: ${settings?.buyAmount} SOL\n` +
@@ -224,14 +231,14 @@ export const handleStartPumpFunTrading = async (ctx: MyContext): Promise<void> =
         'Use /pumpfun_settings to update these settings and /pumpfun_status to check performance metrics.'
       );
       
-      logger.info(`User ${userId} started automatic Pump.fun trading.`);
+      logger.info(`User ${userId} started automatic PumpPortal trading.`);
     } catch (error: any) {
       // Check if it's a funds-related error
       if (error.message && error.message.includes('funds')) {
         await ctx.reply(`❌ ${error.message}\n\nPlease add more SOL to your wallet and try again.`);
       } else {
-        logger.error(`Error starting Pump.fun trading: ${error.message}`, error);
-        await ctx.reply(`❌ Failed to start Pump.fun trading: ${error.message}`);
+        logger.error(`Error starting PumpPortal trading: ${error.message}`, error);
+        await ctx.reply(`❌ Failed to start PumpPortal trading: ${error.message}`);
       }
     }
   } catch (error: any) {
@@ -253,7 +260,7 @@ export const handlePumpFunSettings = async (ctx: MyContext): Promise<void> => {
 
     // Check if the listener is active
     if (!isPumpFunListenerActive(userId)) {
-      await ctx.reply('❌ You need to start the Pump.fun listener first. Use /start_pumpfun to do that.');
+      await ctx.reply('❌ You need to start the PumpPortal listener first. Use /start_pumpfun to do that.');
       return;
     }
 
@@ -345,7 +352,7 @@ export const handlePumpFunSettings = async (ctx: MyContext): Promise<void> => {
     // Show the settings menu
     await showSettingsMenu(ctx);
   } catch (error: any) {
-    logger.error(`Error handling Pump.fun settings: ${error.message}`, error);
+    logger.error(`Error handling PumpPortal settings: ${error.message}`, error);
     await ctx.reply(`❌ Failed to handle settings: ${error.message}`);
   }
 };
@@ -363,7 +370,7 @@ export const handlePumpFunTokenFilter = async (ctx: MyContext): Promise<void> =>
 
     // Check if the listener is active
     if (!isPumpFunListenerActive(userId)) {
-      await ctx.reply('❌ You need to start the Pump.fun listener first. Use /start_pumpfun to do that.');
+      await ctx.reply('❌ You need to start the PumpPortal listener first. Use /start_pumpfun to do that.');
       return;
     }
 
@@ -377,7 +384,7 @@ export const handlePumpFunTokenFilter = async (ctx: MyContext): Promise<void> =>
       'Type "none" or "clear" to remove the filter.'
     );
   } catch (error: any) {
-    logger.error(`Error handling Pump.fun token filter: ${error.message}`, error);
+    logger.error(`Error handling PumpPortal token filter: ${error.message}`, error);
     await ctx.reply(`❌ Failed to handle token filter: ${error.message}`);
   }
 };
@@ -395,7 +402,7 @@ export const handlePumpFunStatus = async (ctx: MyContext): Promise<void> => {
 
     // Check if the listener is active
     if (!isPumpFunListenerActive(userId)) {
-      await ctx.reply('ℹ️ Pump.fun listener is not active. Use /start_pumpfun to start it.');
+      await ctx.reply('ℹ️ PumpPortal listener is not active. Use /start_pumpfun to start it.');
       return;
     }
 
@@ -439,7 +446,7 @@ export const handlePumpFunStatus = async (ctx: MyContext): Promise<void> => {
     }
     
     // Create the status message
-    let message = `📊 <b>Pump.fun Bot Status</b>\n\n`;
+    let message = `📊 <b>PumpPortal Bot Status</b>\n\n`;
     message += `<b>Current state:</b> ${status === 'monitoring' ? '🔍 Monitoring only' : '🤖 Trading'}\n`;
     message += `<b>Connection status:</b> ${connectionStatus.status}${lastMessageInfo}${walletBalanceMessage}\n\n`;
     
@@ -475,7 +482,7 @@ export const handlePumpFunStatus = async (ctx: MyContext): Promise<void> => {
     
     await ctx.reply(message, { parse_mode: 'HTML' });
   } catch (error: any) {
-    logger.error(`Error checking Pump.fun status: ${error.message}`, error);
+    logger.error(`Error checking PumpPortal status: ${error.message}`, error);
     await ctx.reply(`❌ Failed to check status: ${error.message}`);
   }
 };
@@ -493,12 +500,12 @@ async function showSettingsMenu(ctx: MyContext): Promise<void> {
   // Get current settings
   const settings = getPumpFunSettings(userId);
   if (!settings) {
-    await ctx.reply('❌ Settings not found. Please restart the Pump.fun listener.');
+    await ctx.reply('❌ Settings not found. Please restart the PumpPortal listener.');
     return;
   }
 
   // Create the settings message
-  const message = `⚙️ <b>Pump.fun Settings</b>\n\n` +
+  const message = `⚙️ <b>PumpPortal Settings</b>\n\n` +
     `<b>Current settings:</b>\n` +
     `1️⃣ Minimum boost amount: $${settings.minBoostAmount}\n` +
     `2️⃣ Buy amount: ${settings.buyAmount} SOL\n` +
@@ -535,7 +542,7 @@ export const handlePumpFunMinBoost = async (ctx: MyContext): Promise<void> => {
 
   // Check if the listener is active
   if (!isPumpFunListenerActive(userId)) {
-    await ctx.reply('❌ You need to start the Pump.fun listener first. Use /start_pumpfun to do that.');
+    await ctx.reply('❌ You need to start the PumpPortal listener first. Use /start_pumpfun to do that.');
     return;
   }
 
@@ -559,7 +566,7 @@ export const handlePumpFunBuyAmount = async (ctx: MyContext): Promise<void> => {
 
   // Check if the listener is active
   if (!isPumpFunListenerActive(userId)) {
-    await ctx.reply('❌ You need to start the Pump.fun listener first. Use /start_pumpfun to do that.');
+    await ctx.reply('❌ You need to start the PumpPortal listener first. Use /start_pumpfun to do that.');
     return;
   }
 
@@ -583,7 +590,7 @@ export const handlePumpFunAutoSell = async (ctx: MyContext): Promise<void> => {
 
   // Check if the listener is active
   if (!isPumpFunListenerActive(userId)) {
-    await ctx.reply('❌ You need to start the Pump.fun listener first. Use /start_pumpfun to do that.');
+    await ctx.reply('❌ You need to start the PumpPortal listener first. Use /start_pumpfun to do that.');
     return;
   }
 
@@ -610,7 +617,7 @@ export const handlePumpFunProfitTarget = async (ctx: MyContext): Promise<void> =
 
   // Check if the listener is active
   if (!isPumpFunListenerActive(userId)) {
-    await ctx.reply('❌ You need to start the Pump.fun listener first. Use /start_pumpfun to do that.');
+    await ctx.reply('❌ You need to start the PumpPortal listener first. Use /start_pumpfun to do that.');
     return;
   }
 
@@ -634,7 +641,7 @@ export const handlePumpFunStopLoss = async (ctx: MyContext): Promise<void> => {
 
   // Check if the listener is active
   if (!isPumpFunListenerActive(userId)) {
-    await ctx.reply('❌ You need to start the Pump.fun listener first. Use /start_pumpfun to do that.');
+    await ctx.reply('❌ You need to start the PumpPortal listener first. Use /start_pumpfun to do that.');
     return;
   }
 
@@ -658,7 +665,7 @@ export const handlePumpFunMaxHoldTime = async (ctx: MyContext): Promise<void> =>
 
   // Check if the listener is active
   if (!isPumpFunListenerActive(userId)) {
-    await ctx.reply('❌ You need to start the Pump.fun listener first. Use /start_pumpfun to do that.');
+    await ctx.reply('❌ You need to start the PumpPortal listener first. Use /start_pumpfun to do that.');
     return;
   }
 
@@ -682,7 +689,7 @@ export const handlePumpFunSlippage = async (ctx: MyContext): Promise<void> => {
 
   // Check if the listener is active
   if (!isPumpFunListenerActive(userId)) {
-    await ctx.reply('❌ You need to start the Pump.fun listener first. Use /start_pumpfun to do that.');
+    await ctx.reply('❌ You need to start the PumpPortal listener first. Use /start_pumpfun to do that.');
     return;
   }
 
@@ -706,7 +713,7 @@ export const handlePumpFunPriorityFee = async (ctx: MyContext): Promise<void> =>
 
   // Check if the listener is active
   if (!isPumpFunListenerActive(userId)) {
-    await ctx.reply('❌ You need to start the Pump.fun listener first. Use /start_pumpfun to do that.');
+    await ctx.reply('❌ You need to start the PumpPortal listener first. Use /start_pumpfun to do that.');
     return;
   }
 
@@ -757,62 +764,58 @@ async function getConnectionStatus(userId: number): Promise<{
  * Handle running network diagnostics for Pump.fun
  */
 export const handlePumpFunDiagnostics = async (ctx: MyContext): Promise<void> => {
+  const userId = ctx.from?.id;
+  if (!userId) {
+    await ctx.reply('Error: User ID not found.');
+    return;
+  }
+
+  const loadingMsg = await ctx.reply('🔄 Running PumpPortal diagnostics...');
+  
+  // Initialize results
+  let dnsWorking = false;
+  const dnsResults: Record<string, string> = {};
+  let httpWorking = false;
+  let wsWorking = false;
+  let wsError: string | undefined;
+  
   try {
-    // Send initial message
-    await ctx.reply('🔍 Running Pump.fun network diagnostics...');
-    const statusMsg = await ctx.reply('This will test DNS resolution, HTTP connectivity, and WebSocket connections.\nPlease wait, this may take up to 15 seconds...');
-    
     // Test DNS resolution
-    const dnsResults: {[key: string]: string} = {};
-    let dnsWorking = true;
-    const domains = ['socket.pump.fun', 'api.pump.fun', 'pump.fun'];
-    
-    for (const domain of domains) {
-      try {
-        const resolved = await dns.promises.resolve4(domain);
-        dnsResults[domain] = resolved[0];
-      } catch (err) {
-        dnsResults[domain] = 'Failed to resolve';
-        dnsWorking = false;
-      }
-    }
-    
-    // Test HTTP connectivity with retry mechanism
-    let httpWorking = false;
-    let httpError = '';
-    
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-        
-        const response = await fetch('https://api.pump.fun/health', {
-          signal: controller.signal as any, // Cast to any to resolve type issue
-          headers: { 'User-Agent': 'Mozilla/5.0' }
-        });
-        
-        clearTimeout(timeoutId);
-        
-        if (response.ok) {
-          httpWorking = true;
-          break;
-        } else {
-          httpError = `Status: ${response.status}`;
+    try {
+      const domains = ['socket.pumpportal.fun', 'api.pumpportal.fun', 'pumpportal.fun'];
+      for (const domain of domains) {
+        try {
+          const resolved = await dnsLookup(domain);
+          dnsResults[domain] = resolved.address;
+        } catch (err: any) {
+          dnsResults[domain] = `Failed: ${err.message}`;
         }
-      } catch (err: any) {
-        httpError = err.message || 'Connection failed';
-        // Wait before retry
-        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 2000));
       }
+      
+      // Consider DNS working if at least one domain resolved successfully
+      dnsWorking = Object.values(dnsResults).some(result => !result.includes('Failed'));
+    } catch (err: any) {
+      logger.error(`DNS test error: ${err.message}`);
     }
     
-    // Test WebSocket connectivity with retry mechanism
-    let wsWorking = false;
-    let wsError = '';
+    // Test HTTP connectivity
+    try {
+      const response = await axios.get('https://pumpportal.fun', {
+        timeout: 10000,
+        httpsAgent: new https.Agent({
+          rejectUnauthorized: false // For diagnostic purposes only
+        })
+      });
+      
+      httpWorking = response.status === 200;
+    } catch (err: any) {
+      logger.error(`HTTP test error: ${err.message}`);
+    }
     
+    // Test WebSocket connectivity
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        const ws = new WebSocket('wss://socket.pump.fun/socket.io/?EIO=4&transport=websocket');
+        const ws = new WebSocket('wss://socket.pumpportal.fun/socket.io/?EIO=4&transport=websocket');
         
         const wsResult = await new Promise<{success: boolean, error?: string}>((resolve) => {
           const timeout = setTimeout(() => {
@@ -847,7 +850,7 @@ export const handlePumpFunDiagnostics = async (ctx: MyContext): Promise<void> =>
     }
     
     // Format results message
-    let diagResultsMsg = `📊 Pump.fun Diagnostic Results\n\n`;
+    let diagResultsMsg = `📊 PumpPortal Diagnostic Results\n\n`;
     diagResultsMsg += `DNS Resolution: ${dnsWorking ? '✅ Working' : '❌ Failed'}\n`;
     
     for (const [domain, ip] of Object.entries(dnsResults)) {
@@ -856,9 +859,9 @@ export const handlePumpFunDiagnostics = async (ctx: MyContext): Promise<void> =>
     
     diagResultsMsg += `\nHTTP Connectivity: ${httpWorking ? '✅ Working' : '❌ Failed'}\n`;
     diagResultsMsg += `WebSocket Connectivity: ${wsWorking ? '✅ Working' : '❌ Failed'}\n`;
-    
+
     if (!httpWorking || !wsWorking) {
-      diagResultsMsg += `\nError Message: ${httpWorking ? wsError : httpError}\n\n`;
+      diagResultsMsg += `\nError Message: ${httpWorking ? wsError : 'Connection failed'}\n\n`;
       diagResultsMsg += `Recommendations:\n`;
       diagResultsMsg += `• Check if your network blocks outbound HTTPS (port 443) connections\n`;
       diagResultsMsg += `• Verify your EC2 security group allows outbound traffic\n`;
@@ -868,20 +871,565 @@ export const handlePumpFunDiagnostics = async (ctx: MyContext): Promise<void> =>
       diagResultsMsg += `To fix EC2 connectivity issues:\n`;
       diagResultsMsg += `1. Edit your EC2 security group to allow all outbound traffic\n`;
       diagResultsMsg += `2. Run these commands on your server:\n`;
-      diagResultsMsg += `echo "52.198.55.31 socket.pump.fun" | sudo tee -a /etc/hosts\n`;
+      diagResultsMsg += `echo "52.198.55.31 socket.pumpportal.fun" | sudo tee -a /etc/hosts\n`;
       diagResultsMsg += `echo "nameserver 8.8.8.8" | sudo tee -a /etc/resolv.conf\n`;
     }
     
     // Update status message with results
     if (ctx.chat) {
-      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, diagResultsMsg);
+      await ctx.api.editMessageText(ctx.chat.id, loadingMsg.message_id, null, diagResultsMsg);
     } else {
       // If chat is undefined, try sending a new message
       await ctx.reply(diagResultsMsg);
     }
     
-  } catch (error) {
-    logger.error('Error running pump.fun diagnostics:', error);
+  } catch (error: any) {
+    logger.error(`Error running diagnostics: ${error.message}`);
     await ctx.reply('❌ Error running diagnostics. Please try again later.');
+  }
+};
+
+/**
+ * Check if pump.fun services are reachable
+ * @returns A boolean indicating whether the service is reachable
+ */
+async function isPumpFunReachable(): Promise<boolean> {
+  try {
+    // First, try to resolve the domain
+    try {
+      await dnsLookup('socket.pumpportal.fun');
+      logger.info('Domain socket.pumpportal.fun successfully resolved');
+    } catch (error: any) {
+      logger.warn('Cannot resolve socket.pumpportal.fun domain, will try alternative domains');
+      
+      // Try alternative domains
+      try {
+        await dnsLookup('api.pumpportal.fun');
+        logger.info('Domain api.pumpportal.fun successfully resolved');
+      } catch (error: any) {
+        try {
+          await dnsLookup('pumpportal.fun');
+          logger.info('Domain pumpportal.fun successfully resolved');
+        } catch (error: any) {
+          logger.error('All pumpportal.fun domains failed to resolve');
+          return false;
+        }
+      }
+    }
+    
+    // Then try to connect to the API to check if service is up
+    try {
+      const response = await axios.get('https://pumpportal.fun/api/health', {
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      if (response.status === 200) {
+        logger.info('PumpPortal API is reachable');
+        return true;
+      }
+    } catch (error: any) {
+      logger.warn('Could not connect to PumpPortal API health endpoint');
+    }
+    
+    // If API health check fails, try a simple HTTP request
+    try {
+      const response = await axios.get('https://pumpportal.fun', {
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      if (response.status === 200) {
+        logger.info('PumpPortal website is reachable');
+        return true;
+      }
+    } catch (error: any) {
+      logger.error('Could not connect to PumpPortal website');
+    }
+    
+    return false;
+  } catch (error: any) {
+    logger.error(`Error checking PumpPortal reachability: ${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * Connect to PumpPortal WebSocket to listen for new tokens
+ * @param userId The user ID
+ * @returns A promise that resolves when connected
+ */
+async function connectToPumpFunWebSocket(userId: number): Promise<void> {
+  const listener = activeListeners.get(userId);
+  if (!listener) {
+    throw new Error("No active listener found for user");
+  }
+
+  try {
+    // Close existing connection if any
+    if (listener.wsConnection) {
+      listener.wsConnection.close();
+    }
+
+    // Clear any existing heartbeat interval
+    if (listener.heartbeatIntervalId) {
+      clearInterval(listener.heartbeatIntervalId);
+      listener.heartbeatIntervalId = undefined;
+    }
+
+    // Clear any existing health check interval
+    if (listener.connectionHealthCheckId) {
+      clearInterval(listener.connectionHealthCheckId);
+      listener.connectionHealthCheckId = undefined;
+    }
+
+    // Try multiple connection endpoints in case one fails
+    const endpoints = [
+      'wss://socket.pumpportal.fun/socket',
+      'wss://api.pumpportal.fun/socket',
+      'wss://www.pumpportal.fun/socket',
+      'wss://pumpportal.fun/socket',
+      'wss://socket.pumpportal.fun:443/socket' // Try explicitly setting port 443
+    ];
+    
+    let connected = false;
+    let lastError = null;
+    
+    // Try each endpoint until one succeeds
+    for (const endpoint of endpoints) {
+      if (connected) break;
+      
+      try {
+        logger.info(`Attempting to connect to ${endpoint} for user ${userId}`);
+        const ws = new WebSocket(endpoint, {
+          handshakeTimeout: 10000, // 10 seconds timeout for handshake
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          },
+          // Force IPv4 if needed
+          // family: 4
+        });
+        
+        // Create a promise that resolves on connection or rejects on error
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('Connection timeout'));
+            ws.terminate();
+          }, 15000);
+          
+          ws.on('open', () => {
+            clearTimeout(timeout);
+            resolve(true);
+          });
+          
+          ws.on('error', (error) => {
+            clearTimeout(timeout);
+            reject(error);
+          });
+        });
+        
+        // If we get here, connection succeeded
+        connected = true;
+        
+        // Update last message timestamp
+        listener.lastMessageTimestamp = Date.now();
+        
+        // Setup event handlers
+        ws.on('open', () => {
+          logger.info(`WebSocket connection opened for user ${userId} at ${endpoint}`);
+          notifyUserById(userId, `🔌 Connected to PumpPortal WebSocket API`);
+          
+          // Subscribe to new token events
+          ws.send(JSON.stringify({
+            type: 'subscribe',
+            channel: 'tokens:new'
+          }));
+
+          // Setup heartbeat ping to keep connection alive (every 30 seconds)
+          listener.heartbeatIntervalId = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              logger.debug(`Sending heartbeat ping for user ${userId}`);
+              ws.ping();
+              
+              // Also send subscription message periodically to keep connection active
+              try {
+                ws.send(JSON.stringify({ 
+                  type: 'ping',
+                  timestamp: Date.now()
+                }));
+              } catch (err: any) {
+                logger.warn(`Error sending heartbeat message: ${err.message}`);
+              }
+            }
+          }, 30000);
+
+          // Setup health check to detect stale connections (check every minute)
+          listener.connectionHealthCheckId = setInterval(() => {
+            const now = Date.now();
+            const minutesSinceLastMessage = (now - listener.lastMessageTimestamp) / (1000 * 60);
+            
+            // If no message received for 5 minutes, consider connection stale
+            if (minutesSinceLastMessage > 5) {
+              logger.warn(`No messages received for ${minutesSinceLastMessage.toFixed(1)} minutes for user ${userId}. Reconnecting...`);
+              
+              // Notify user of stale connection
+              notifyUserById(userId, `⚠️ No messages received from PumpPortal for ${minutesSinceLastMessage.toFixed(0)} minutes. Reconnecting...`);
+              
+              // Force reconnection
+              ws.terminate();
+              
+              // Reconnect with slight delay
+              setTimeout(() => {
+                if (activeListeners.has(userId)) {
+                  connectToPumpFunWebSocket(userId);
+                }
+              }, 1000);
+            }
+          }, 60000);
+        });
+
+        break;
+      } catch (error: any) {
+        // Log the error but continue to try other endpoints
+        lastError = error;
+        logger.warn(`Failed to connect to ${endpoint}: ${error.message}`);
+      }
+    }
+    
+    // If we couldn't connect to any endpoint, throw the last error
+    if (!connected && lastError) {
+      throw lastError;
+    }
+    
+  } catch (error: any) {
+    logger.error(`Error setting up WebSocket for user ${userId}: ${error.message}`);
+    notifyUserById(userId, `⚠️ Could not connect to PumpPortal. Please try again later or check if service is available.`);
+    
+    // Set a retry after some time
+    setTimeout(() => {
+      if (activeListeners.has(userId)) {
+        connectToPumpFunWebSocket(userId);
+      }
+    }, 30000); // Retry after 30 seconds
+  }
+}
+
+/**
+ * Get WebSocket connection state for a user
+ * @param userId User ID to check connection for
+ * @returns Connection state information
+ */
+export function getPumpFunConnectionState(userId: number): {
+  connected: boolean;
+  readyState?: number;
+  lastMessageTimestamp?: number;
+  endpoint?: string;
+} {
+  const listener = activeListeners.get(userId);
+  if (!listener || !listener.wsConnection) {
+    return { connected: false };
+  }
+
+  return {
+    connected: listener.wsConnection.readyState === WebSocket.OPEN,
+    readyState: listener.wsConnection.readyState,
+    lastMessageTimestamp: listener.lastMessageTimestamp,
+    endpoint: listener.wsConnection.url
+  };
+}
+
+/**
+ * Run diagnostics on WebSocket connection
+ * @param userId User ID to run diagnostics for
+ * @returns Diagnostic results
+ */
+export async function runPumpFunDiagnostics(userId: number): Promise<{
+  dns: boolean;
+  dnsResults: string[];
+  http: boolean;
+  websocket: boolean;
+  connectionState?: {
+    connected: boolean;
+    readyState?: number;
+    lastMessageTimestamp?: number;
+  } | undefined;
+  errorMessage?: string | undefined;
+}> {
+  const results: {
+    dns: boolean;
+    dnsResults: string[];
+    http: boolean;
+    websocket: boolean;
+    connectionState?: {
+      connected: boolean;
+      readyState?: number;
+      lastMessageTimestamp?: number;
+    };
+    errorMessage?: string;
+  } = {
+    dns: false,
+    dnsResults: [],
+    http: false,
+    websocket: false
+  };
+
+  try {
+    // Test DNS resolution
+    try {
+      const domains = ['socket.pumpportal.fun', 'api.pumpportal.fun', 'pumpportal.fun'];
+      for (const domain of domains) {
+        try {
+          const resolved = await dnsLookup(domain);
+          results.dnsResults.push(`✅ ${domain} resolves to ${resolved.address}`);
+          results.dns = true;
+        } catch (error: any) {
+          results.dnsResults.push(`❌ ${domain} resolution failed: ${error.message}`);
+        }
+      }
+    } catch (error: any) {
+      results.dnsResults.push(`❌ DNS resolution test failed: ${error.message}`);
+    }
+
+    // Test HTTP connectivity
+    try {
+      const response = await axios.get('https://pumpportal.fun', {
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      if (response.status === 200) {
+        results.http = true;
+      }
+    } catch (error: any) {
+      results.errorMessage = `HTTP test failed: ${error.message}`;
+    }
+
+    // Check WebSocket state for this user
+    const listener = activeListeners.get(userId);
+    if (listener && listener.wsConnection) {
+      results.connectionState = {
+        connected: listener.wsConnection.readyState === WebSocket.OPEN,
+        readyState: listener.wsConnection.readyState,
+        lastMessageTimestamp: listener.lastMessageTimestamp
+      };
+      
+      if (listener.wsConnection.readyState === WebSocket.OPEN) {
+        results.websocket = true;
+      }
+    }
+    
+    // If no active connection, test creating a temporary one
+    if (!results.websocket) {
+      try {
+        // Try to open a temporary WebSocket connection
+        const tempResult = await testWebSocketConnection();
+        results.websocket = tempResult.success;
+        if (!tempResult.success && tempResult.error) {
+          results.errorMessage = tempResult.error;
+        }
+      } catch (error: any) {
+        results.errorMessage = `WebSocket test failed: ${error.message}`;
+      }
+    }
+
+    return results;
+  } catch (error: any) {
+    logger.error(`Error running diagnostics: ${error.message}`);
+    return {
+      ...results,
+      errorMessage: `Diagnostic error: ${error.message}`
+    };
+  }
+}
+
+/**
+ * Test WebSocket connection to PumpPortal
+ * @returns Test result
+ */
+async function testWebSocketConnection(): Promise<{ success: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    try {
+      // Close after 5 seconds regardless of outcome
+      const timeout = setTimeout(() => {
+        if (ws.readyState === WebSocket.CONNECTING) {
+          ws.terminate();
+          resolve({ success: false, error: 'Connection timeout' });
+        }
+      }, 5000);
+      
+      const ws = new WebSocket('wss://socket.pumpportal.fun/socket', {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      ws.on('open', () => {
+        clearTimeout(timeout);
+        // Close the test connection
+        ws.close();
+        resolve({ success: true });
+      });
+      
+      ws.on('error', (error) => {
+        clearTimeout(timeout);
+        ws.terminate();
+        resolve({ success: false, error: error.message });
+      });
+    } catch (error: any) {
+      resolve({ success: false, error: error.message });
+    }
+  });
+}
+
+export const testPumpFunConnection = async (userId: number): Promise<{
+  success: boolean;
+  details: {
+    http: boolean;
+    websocket: boolean;
+    dns: {
+      success: boolean;
+      results: Record<string, string>;
+    };
+    ping: {
+      success: boolean;
+      latency?: number;
+      packetLoss?: number;
+    };
+    errorDetails?: string;
+  };
+}> {
+  const result = {
+    success: false,
+    details: {
+      http: false,
+      websocket: false,
+      dns: {
+        success: false,
+        results: {}
+      },
+      ping: {
+        success: false
+      }
+    }
+  };
+
+  try {
+    // Test DNS resolution
+    try {
+      const domains = ['socket.pumpportal.fun', 'api.pumpportal.fun', 'pumpportal.fun'];
+      let dnsSuccessCount = 0;
+      
+      for (const domain of domains) {
+        try {
+          const resolveResult = await dnsLookup(domain);
+          result.details.dns.results[domain] = resolveResult.address;
+          dnsSuccessCount++;
+        } catch (dnsErr: any) {
+          result.details.dns.results[domain] = `ERROR: ${dnsErr.message}`;
+        }
+      }
+      
+      // Consider DNS successful if at least one domain resolves
+      result.details.dns.success = dnsSuccessCount > 0;
+    } catch (dnsError: any) {
+      result.details.errorDetails = `DNS ERROR: ${dnsError.message}`;
+    }
+    
+    // Test HTTP connectivity
+    try {
+      const response = await axios.get('https://pumpportal.fun', {
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        httpsAgent: new https.Agent({
+          rejectUnauthorized: false // For diagnostic purposes only
+        })
+      });
+      
+      result.details.http = response.status === 200;
+    } catch (httpError: any) {
+      result.details.errorDetails = `HTTP ERROR: ${httpError.message}`;
+    }
+
+    // Test ping to IP
+    if (result.details.dns.success) {
+      try {
+        // Get first successfully resolved IP
+        const ip = Object.values(result.details.dns.results).find(value => !value.includes('ERROR'));
+        
+        if (ip) {
+          const pingResult = await ping.promise.probe(ip, {
+            timeout: 10,
+            extra: ['-c', '4']
+          });
+          
+          result.details.ping.success = pingResult.alive;
+          if (pingResult.alive) {
+            result.details.ping.latency = parseFloat(pingResult.avg);
+            result.details.ping.packetLoss = parseFloat(pingResult.packetLoss);
+          }
+        }
+      } catch (pingError: any) {
+        result.details.errorDetails = `PING ERROR: ${pingError.message}`;
+      }
+    }
+
+    // Test WebSocket with custom agent
+    try {
+      const WebSocket = require('ws');
+      const https = require('https');
+      
+      const wsResult = await new Promise<boolean>((resolve, reject) => {
+        const wsOptions = {
+          agent: new https.Agent({
+            rejectUnauthorized: false, // For diagnosis only
+            keepAlive: true,
+            timeout: 15000
+          }),
+          handshakeTimeout: 15000
+        };
+
+        const ws = new WebSocket('wss://socket.pumpportal.fun/socket.io/?EIO=4&transport=websocket', wsOptions);
+        
+        const timeout = setTimeout(() => {
+          ws.terminate();
+          reject(new Error('WebSocket connection timed out'));
+        }, 15000);
+        
+        ws.on('open', () => {
+          clearTimeout(timeout);
+          ws.close();
+          resolve(true);
+        });
+        
+        ws.on('error', (error: Error) => {
+          clearTimeout(timeout);
+          ws.terminate();
+          reject(error);
+        });
+      });
+      
+      result.details.websocket = wsResult;
+    } catch (wsError: any) {
+      if (!result.details.errorDetails) {
+        result.details.errorDetails = `WEBSOCKET ERROR: ${wsError.message}`;
+      } else {
+        result.details.errorDetails += ` | WEBSOCKET ERROR: ${wsError.message}`;
+      }
+    }
+
+    // Overall success if both HTTP and WebSocket work
+    result.success = result.details.http && result.details.websocket;
+    return result;
+  } catch (error: any) {
+    result.details.errorDetails = `GENERAL ERROR: ${error.message}`;
+    return result;
   }
 }; 
