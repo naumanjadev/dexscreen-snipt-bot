@@ -787,7 +787,7 @@ export const handlePumpFunDiagnostics = async (ctx: MyContext): Promise<void> =>
         const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
         
         const response = await fetch('https://api.pump.fun/health', {
-          signal: controller.signal,
+          signal: controller.signal as any, // Cast to any to resolve type issue
           headers: { 'User-Agent': 'Mozilla/5.0' }
         });
         
@@ -873,7 +873,12 @@ export const handlePumpFunDiagnostics = async (ctx: MyContext): Promise<void> =>
     }
     
     // Update status message with results
-    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, diagResultsMsg);
+    if (ctx.chat) {
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, diagResultsMsg);
+    } else {
+      // If chat is undefined, try sending a new message
+      await ctx.reply(diagResultsMsg);
+    }
     
   } catch (error) {
     logger.error('Error running pump.fun diagnostics:', error);
