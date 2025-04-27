@@ -1558,4 +1558,134 @@ async function testWebSocketConnection(): Promise<{ success: boolean; error?: st
       resolve({ success: false, error: error.message });
     }
   });
-} 
+}
+
+/**
+ * Attempts to establish a connection to Pump.fun services with advanced retry and diagnostics
+ */
+export const testPumpFunConnection = async (userId: number): Promise<{
+  success: boolean;
+  details: {
+    dns: boolean;
+    http: boolean;
+    websocket: boolean;
+    errorDetails: string | undefined;
+  }
+}> => {
+  const result = {
+    success: false,
+    details: {
+      dns: false,
+      http: false,
+      websocket: false,
+      errorDetails: undefined as string | undefined
+    }
+  };
+
+  try {
+    // Test DNS resolution
+    try {
+      const { promisify } = require('util');
+      const dns = require('dns');
+      const lookup = promisify(dns.lookup);
+      await lookup('api.pump.fun');
+      result.details.dns = true;
+    } catch (dnsError: any) {
+      result.details.errorDetails = `DNS ERROR: ${dnsError.message}`;
+      return result;
+    }
+
+    // Test HTTP with custom agent bypassing potential network issues
+    try {
+      const https = require('https');
+      const httpResult = await new Promise<boolean>((resolve, reject) => {
+        const req = https.request(
+          {
+            hostname: 'api.pump.fun',
+            port: 443,
+            path: '/health',
+            method: 'GET',
+            timeout: 15000,
+            agent: new https.Agent({
+              rejectUnauthorized: false, // For diagnosis only
+              keepAlive: true,
+              timeout: 15000
+            })
+          },
+          (res: any) => {
+            res.on('data', () => {}); // Consume data
+            res.on('end', () => {
+              resolve(res.statusCode >= 200 && res.statusCode < 300);
+            });
+          }
+        );
+
+        req.on('error', (err: Error) => {
+          reject(err);
+        });
+
+        req.on('timeout', () => {
+          req.destroy();
+          reject(new Error('HTTP request timed out'));
+        });
+
+        req.end();
+      });
+
+      result.details.http = httpResult;
+    } catch (httpError: any) {
+      result.details.errorDetails = `HTTP ERROR: ${httpError.message}`;
+    }
+
+    // Test WebSocket with custom agent
+    try {
+      const WebSocket = require('ws');
+      const https = require('https');
+      
+      const wsResult = await new Promise<boolean>((resolve, reject) => {
+        const wsOptions = {
+          agent: new https.Agent({
+            rejectUnauthorized: false, // For diagnosis only
+            keepAlive: true,
+            timeout: 15000
+          }),
+          handshakeTimeout: 15000
+        };
+
+        const ws = new WebSocket('wss://socket.pump.fun/socket.io/?EIO=4&transport=websocket', wsOptions);
+        
+        const timeout = setTimeout(() => {
+          ws.terminate();
+          reject(new Error('WebSocket connection timed out'));
+        }, 15000);
+        
+        ws.on('open', () => {
+          clearTimeout(timeout);
+          ws.close();
+          resolve(true);
+        });
+        
+        ws.on('error', (error: Error) => {
+          clearTimeout(timeout);
+          ws.terminate();
+          reject(error);
+        });
+      });
+      
+      result.details.websocket = wsResult;
+    } catch (wsError: any) {
+      if (!result.details.errorDetails) {
+        result.details.errorDetails = `WEBSOCKET ERROR: ${wsError.message}`;
+      } else {
+        result.details.errorDetails += ` | WEBSOCKET ERROR: ${wsError.message}`;
+      }
+    }
+
+    // Overall success if both HTTP and WebSocket work
+    result.success = result.details.http && result.details.websocket;
+    return result;
+  } catch (error: any) {
+    result.details.errorDetails = `GENERAL ERROR: ${error.message}`;
+    return result;
+  }
+}; 
