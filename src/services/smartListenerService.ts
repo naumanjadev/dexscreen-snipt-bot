@@ -2374,13 +2374,27 @@ const executeBuy = async (
     if (!priceInfo.liquidity?.usd || priceInfo.liquidity.usd < 5000) {
       throw new Error(`Insufficient liquidity ($${priceInfo.liquidity?.usd || 0}). Minimum $5000 required.`);
     }
-
+    
+    // Fetch boosted token data for this token to apply filters
+    const boostedTokens = await fetchLatestBoostedTokens();
+    const tokenData = boostedTokens.find(t => t.tokenAddress === tokenAddress);
+    
+    if (!tokenData) {
+      throw new Error('Token is no longer in the boosted tokens list');
+    }
+    
     // Prepare token info for purchase
     const tokenInfo: TokenInfo = {
       mintAddress: tokenAddress,
       name: tokenName,
       symbol: tokenSymbol
     };
+    
+    // Apply filters to ensure token still meets boost amount and buy amount requirements
+    const passesFilters = await applyFilters(tokenInfo, userId, tokenData);
+    if (!passesFilters) {
+      throw new Error(`Token no longer meets boost amount or buy amount requirements`);
+    }
 
     // Purchase token with configured budget
     const purchaseResult = await purchaseToken(userId, tokenInfo, userListener.tradingBudget);
@@ -2997,8 +3011,29 @@ const findBestTradingOpportunity = async (userId: number): Promise<{
       score: number;
     }> = [];
     
+    // Apply user filters based on boost amount and buy amount
+    const filteredTokens: DexScreenerBoostedToken[] = [];
+    for (const token of solanaTokens) {
+      // Create a basic TokenInfo object for filter check
+      const tokenInfo: TokenInfo = {
+        mintAddress: token.tokenAddress
+      };
+      
+      // Apply filters from tokenFilters.ts
+      const passesFilters = await applyFilters(tokenInfo, userId, token);
+      if (passesFilters) {
+        filteredTokens.push(token);
+      }
+    }
+    
+    // If no tokens pass filters, return null
+    if (filteredTokens.length === 0) {
+      logger.info(`No tokens passed boostamount/buyamount filters for user ${userId}`);
+      return null;
+    }
+    
     // Process up to 10 tokens for high-frequency scan
-    const tokensToCheck = solanaTokens.slice(0, 10);
+    const tokensToCheck = filteredTokens.slice(0, 10);
     
     // Use Promise.all to fetch token data in parallel for faster execution
     const tokenAnalysisPromises = tokensToCheck.map(async (token) => {
@@ -3094,6 +3129,18 @@ const findBestTradingOpportunity = async (userId: number): Promise<{
           // Liquidity as safety factor
           if (priceInfo.liquidity?.usd && priceInfo.liquidity.usd > 25000) score += 5;
           
+          // Factor in boost amount - higher boost amount should increase score
+          const boostAmount = token.totalAmount || 0;
+          if (boostAmount > 0) {
+            // Add up to 25 points based on boost amount (logarithmic scale to avoid overwhelming scores)
+            // This gives higher scoring to tokens with higher boost amounts
+            const boostScore = Math.min(25, Math.log10(boostAmount + 1) * 10);
+            score += boostScore;
+            
+            // Log the boost influence on the score
+            logger.debug(`Token ${token.tokenAddress} boost amount ${boostAmount} adds ${boostScore.toFixed(1)} to score`);
+          }
+          
           return {
             tokenAddress: token.tokenAddress,
             tokenName,
@@ -3159,6 +3206,18 @@ const findBestTradingOpportunity = async (userId: number): Promise<{
           if (h1Change > 5 && h1Change < 20) score += 10; // Healthy growth
           else if (h1Change > 20) score += 5; // Growing but might be too rapid
           else if (h1Change < -10) score -= 15; // Falling knife
+          
+          // Factor in boost amount - higher boost amount should increase score
+          const boostAmount = token.totalAmount || 0;
+          if (boostAmount > 0) {
+            // Add up to 25 points based on boost amount (logarithmic scale to avoid overwhelming scores)
+            // This gives higher scoring to tokens with higher boost amounts
+            const boostScore = Math.min(25, Math.log10(boostAmount + 1) * 10);
+            score += boostScore;
+            
+            // Log the boost influence on the score
+            logger.debug(`Token ${token.tokenAddress} boost amount ${boostAmount} adds ${boostScore.toFixed(1)} to score`);
+          }
           
           return {
             tokenAddress: token.tokenAddress,
