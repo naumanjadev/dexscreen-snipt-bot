@@ -3288,4 +3288,299 @@ const getSolPriceUsd = async (): Promise<number> => {
   );
 };
 
+/**
+ * Analyze Solana-specific on-chain data for a given token
+ * @param tokenAddress The token address to analyze
+ * @returns Promise with Solana-specific metrics
+ */
+const analyzeSolanaOnChainMetrics = async (tokenAddress: string): Promise<{
+  recentTransactions: number;
+  uniqueHolders: number;
+  holderDistribution: 'concentrated' | 'distributed';
+  mempoolActivity: 'low' | 'medium' | 'high';
+  programInteractions: string[];
+}> => {
+  try {
+    // Cache key for this token's on-chain data
+    const cacheKey = `solana_onchain_${tokenAddress}`;
+    
+    // Use caching to avoid excessive RPC calls
+    return await fetchWithCache(cacheKey, 300000, async () => {
+      // Fetch holder data from Solana RPC
+      const holderData = await fetchSolanaTokenHolders(tokenAddress);
+      
+      // Fetch recent transactions involving this token
+      const recentTxs = await fetchRecentTokenTransactions(tokenAddress);
+      
+      // Analyze mempool for pending transactions (indicator of immediate interest)
+      const mempoolStats = await analyzeMempoolActivity(tokenAddress);
+      
+      // Check associated programs (useful to identify scams/legitimate projects)
+      const associatedPrograms = await getAssociatedPrograms(tokenAddress);
+      
+      // Calculate metrics
+      const uniqueHolders = holderData.length;
+      
+      // Analyze holder distribution
+      const topHolderBalance = holderData.length > 0 ? holderData[0].balance : 0;
+      const totalSupply = holderData.reduce((sum, holder) => sum + holder.balance, 0);
+      const topHolderPercentage = (topHolderBalance / totalSupply) * 100;
+      
+      const holderDistribution = topHolderPercentage > 50 ? 'concentrated' : 'distributed';
+      
+      // Classify mempool activity
+      let mempoolActivity: 'low' | 'medium' | 'high' = 'low';
+      if (mempoolStats.pendingTransactions > 20) {
+        mempoolActivity = 'high';
+      } else if (mempoolStats.pendingTransactions > 5) {
+        mempoolActivity = 'medium';
+      }
+      
+      return {
+        recentTransactions: recentTxs.length,
+        uniqueHolders,
+        holderDistribution,
+        mempoolActivity,
+        programInteractions: associatedPrograms
+      };
+    });
+  } catch (error) {
+    logger.warn(`Failed to analyze Solana on-chain metrics for ${tokenAddress}: ${error}`);
+    return {
+      recentTransactions: 0,
+      uniqueHolders: 0,
+      holderDistribution: 'concentrated',
+      mempoolActivity: 'low',
+      programInteractions: []
+    };
+  }
+};
+
+/**
+ * Fetch recent token holders from Solana
+ * @param tokenAddress The token mint address
+ * @returns Array of holder data
+ */
+const fetchSolanaTokenHolders = async (tokenAddress: string): Promise<Array<{address: string, balance: number}>> => {
+  try {
+    // This would use Solana RPC or an API service to fetch token holder data
+    // For now we'll return mock data to demonstrate the concept
+    const holderCount = Math.floor(Math.random() * 1000) + 50;
+    const holders = [];
+    
+    // Generate mock holder data with realistic distribution
+    // In a real implementation, this would call a Solana RPC node or indexer API
+    for (let i = 0; i < holderCount; i++) {
+      const powerLaw = Math.pow(Math.random(), 3); // Creates power-law distribution
+      const balance = Math.floor(powerLaw * 1000000) + 1;
+      holders.push({
+        address: `mock_address_${i}`,
+        balance
+      });
+    }
+    
+    // Sort by balance descending
+    return holders.sort((a, b) => b.balance - a.balance);
+  } catch (error) {
+    logger.error(`Error fetching token holders: ${error}`);
+    return [];
+  }
+};
+
+/**
+ * Fetch recent transactions for a token
+ * @param tokenAddress The token mint address
+ * @returns Array of recent transactions
+ */
+const fetchRecentTokenTransactions = async (tokenAddress: string): Promise<any[]> => {
+  try {
+    // This would fetch recent transactions from Solana RPC
+    // For now we'll return mock data
+    const txCount = Math.floor(Math.random() * 50) + 5;
+    return Array(txCount).fill({});
+  } catch (error) {
+    logger.error(`Error fetching recent transactions: ${error}`);
+    return [];
+  }
+};
+
+/**
+ * Analyze mempool activity for a token
+ * @param tokenAddress The token mint address
+ * @returns Mempool statistics
+ */
+const analyzeMempoolActivity = async (tokenAddress: string): Promise<{pendingTransactions: number}> => {
+  try {
+    // In a real implementation, this would check pending transactions in Solana mempool
+    const pendingTxCount = Math.floor(Math.random() * 30);
+    return {
+      pendingTransactions: pendingTxCount
+    };
+  } catch (error) {
+    logger.error(`Error analyzing mempool: ${error}`);
+    return {
+      pendingTransactions: 0
+    };
+  }
+};
+
+/**
+ * Get programs associated with a token
+ * @param tokenAddress The token mint address
+ * @returns Array of program IDs
+ */
+const getAssociatedPrograms = async (tokenAddress: string): Promise<string[]> => {
+  try {
+    // In a real implementation, this would look at recent transactions
+    // to determine which programs interact with this token
+    return [
+      'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', // Token Program
+      'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'  // Associated Token Program
+    ];
+  } catch (error) {
+    logger.error(`Error getting associated programs: ${error}`);
+    return [];
+  }
+};
+
+/**
+ * Check for known Solana scam patterns
+ * @param tokenAddress The token mint address
+ * @param analysis Market analysis data
+ * @returns Risk assessment
+ */
+const detectSolanaScamPatterns = async (
+  tokenAddress: string,
+  analysis: TokenMarketAnalysis
+): Promise<{
+  riskLevel: 'low' | 'medium' | 'high' | 'extreme';
+  riskFactors: string[];
+}> => {
+  try {
+    const riskFactors: string[] = [];
+    
+    // Get on-chain metrics
+    const onChainMetrics = await analyzeSolanaOnChainMetrics(tokenAddress);
+    
+    // Check holder concentration (common in rugpulls)
+    if (onChainMetrics.holderDistribution === 'concentrated') {
+      riskFactors.push('High token concentration among few wallets');
+    }
+    
+    // Check if associated with known scam programs
+    const scamPrograms = ['9AhKqLR67hwapvG8SA2JFXaCshXr9Fdo3cAwX6fwEZwZ']; // Example scam program ID
+    const hasScamProgram = onChainMetrics.programInteractions.some(program => 
+      scamPrograms.includes(program)
+    );
+    
+    if (hasScamProgram) {
+      riskFactors.push('Interacts with known high-risk programs');
+    }
+    
+    // Check for liquidity issues (common before rugpulls)
+    if (analysis.liquidityUsd !== null && analysis.liquidityUsd < 10000) {
+      riskFactors.push('Very low liquidity');
+    }
+    
+    // Check for suspicious price/volume patterns
+    if (analysis.priceHistory.length >= 3) {
+      const recentPrices = analysis.priceHistory.slice(-3);
+      const suddenJump = (recentPrices[2] / recentPrices[0]) > 5; // 500% increase
+      
+      if (suddenJump && onChainMetrics.uniqueHolders < 100) {
+        riskFactors.push('Suspicious price pump with few holders');
+      }
+    }
+    
+    // Determine overall risk level
+    let riskLevel: 'low' | 'medium' | 'high' | 'extreme' = 'low';
+    
+    if (riskFactors.length >= 3) {
+      riskLevel = 'extreme';
+    } else if (riskFactors.length === 2) {
+      riskLevel = 'high';
+    } else if (riskFactors.length === 1) {
+      riskLevel = 'medium';
+    }
+    
+    return {
+      riskLevel,
+      riskFactors
+    };
+  } catch (error) {
+    logger.error(`Error detecting scam patterns: ${error}`);
+    return {
+      riskLevel: 'medium', // Default to medium if we can't assess
+      riskFactors: ['Unable to complete security analysis']
+    };
+  }
+};
+
+/**
+ * Check Jupiter DEX liquidity for a token
+ * @param tokenAddress The token mint address
+ * @returns Liquidity data from Jupiter
+ */
+const checkJupiterLiquidity = async (tokenAddress: string): Promise<{
+  hasJupiterRoutes: boolean;
+  bestSwapRoute: string | null;
+  slippageEstimate: number;
+}> => {
+  try {
+    // Cache key for Jupiter data
+    const cacheKey = `jupiter_${tokenAddress}`;
+    
+    const result = await fetchWithCache(cacheKey, 60000, async () => {
+      // In a real implementation, this would call Jupiter API to check available swap routes
+      // For now we'll simulate the response
+      const hasRoutes = Math.random() > 0.2; // 80% chance of having routes
+      
+      // If no routes, return early
+      if (!hasRoutes) {
+        return {
+          hasJupiterRoutes: false,
+          bestSwapRoute: null,
+          slippageEstimate: 100 // 100% slippage means effectively not tradeable
+        };
+      }
+      
+      // Mock slippage based on recent volume and liquidity
+      // In a real implementation, this would be calculated from Jupiter API response
+      let slippage = 5; // Base 5% slippage
+      
+      // Adjust based on liquidity
+      const liquidityRandom = Math.random();
+      if (liquidityRandom > 0.8) {
+        slippage = 0.5; // Very liquid
+      } else if (liquidityRandom > 0.5) {
+        slippage = 1.5; // Moderately liquid
+      } else if (liquidityRandom > 0.3) {
+        slippage = 5; // Average liquidity
+      } else {
+        slippage = 15; // Poor liquidity
+      }
+      
+      return {
+        hasJupiterRoutes: true,
+        bestSwapRoute: 'Raydium',
+        slippageEstimate: slippage
+      };
+    });
+    
+    // Handle potential undefined return from fetchWithCache
+    return result || {
+      hasJupiterRoutes: false,
+      bestSwapRoute: null,
+      slippageEstimate: 100
+    };
+  } catch (error) {
+    logger.error(`Error checking Jupiter liquidity: ${error}`);
+    return {
+      hasJupiterRoutes: false,
+      bestSwapRoute: null, 
+      slippageEstimate: 100
+    };
+  }
+};
+
 

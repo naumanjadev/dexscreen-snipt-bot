@@ -266,6 +266,13 @@ Please choose an option:
 /smart_settings - Customize smart listener behavior
 /view_analytics - View detailed token analytics
 
+<b>Pump.fun Tracking:</b>
+/start_pumpfun - Start Pump.fun token listener
+/stop_pumpfun - Stop Pump.fun token listener
+/start_pumpfun_trading - Start automated trading
+/pumpfun_settings - Customize Pump.fun settings
+/pumpfun_status - View Pump.fun status and trades
+
 /help - Show available commands
   `;
   await ctx.reply(welcomeMessage, { parse_mode: 'HTML' });

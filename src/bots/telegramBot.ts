@@ -30,6 +30,23 @@ import {
   handleSetTradingBudgetCommand,
 } from '../controllers/filterController';
 
+import {
+  handleStartPumpFunListener,
+  handleStopPumpFunListener,
+  handleStartPumpFunTrading,
+  handlePumpFunSettings,
+  handlePumpFunTokenFilter,
+  handlePumpFunStatus,
+  handlePumpFunMinBoost,
+  handlePumpFunBuyAmount,
+  handlePumpFunAutoSell,
+  handlePumpFunProfitTarget,
+  handlePumpFunStopLoss,
+  handlePumpFunMaxHoldTime,
+  handlePumpFunSlippage,
+  handlePumpFunPriorityFee
+} from '../controllers/pumpFunController';
+
 import { PublicKey } from '@solana/web3.js';
 
 // Import the new handlers
@@ -191,6 +208,13 @@ Please choose an option:
 /stop_smart_listener - Stop smart token detection and price monitoring
 /smart_settings - Customize smart listener behavior
 /view_analytics - View detailed token analytics
+
+<b>Pump.fun Trading:</b>
+/start_pumpfun - Start Pump.fun token listener
+/stop_pumpfun - Stop Pump.fun listener
+/start_pumpfun_trading - Start automated Pump.fun trading
+/pumpfun_settings - Configure Pump.fun trading settings
+
 /help - Show available commands
     `;
     await ctx.reply(welcomeMessage, { parse_mode: 'HTML' });
@@ -215,6 +239,14 @@ Please choose an option:
 /view_analytics - View detailed token analytics
 /delete_wallet - Delete your Solana wallet
 /main_menu - Go back to the main menu
+
+<b>Pump.fun Commands</b>
+/start_pumpfun - Start Pump.fun token listener
+/stop_pumpfun - Stop Pump.fun token listener
+/start_pumpfun_trading - Start automated trading on Pump.fun
+/pumpfun_settings - Manage Pump.fun trading settings
+/pumpfun_status - View current Pump.fun status and trades
+/pumpfun_token_filter - Set name/symbol filter for Pump.fun tokens
     `;
     await ctx.reply(helpMessage, { parse_mode: 'HTML' });
   });
@@ -244,6 +276,22 @@ Please choose an option:
   // Import the new handlers
   bot.command('confirm_sell', handleConfirmSellCommand);
   bot.command('just_stop', handleJustStopCommand);
+
+  // Pump.fun commands
+  bot.command('start_pumpfun', handleStartPumpFunListener);
+  bot.command('stop_pumpfun', handleStopPumpFunListener);
+  bot.command('start_pumpfun_trading', handleStartPumpFunTrading);
+  bot.command('pumpfun_settings', handlePumpFunSettings);
+  bot.command('pumpfun_token_filter', handlePumpFunTokenFilter);
+  bot.command('pumpfun_status', handlePumpFunStatus);
+  bot.command('pumpfun_min_boost', handlePumpFunMinBoost);
+  bot.command('pumpfun_buy_amount', handlePumpFunBuyAmount);
+  bot.command('pumpfun_auto_sell', handlePumpFunAutoSell);
+  bot.command('pumpfun_profit_target', handlePumpFunProfitTarget);
+  bot.command('pumpfun_stop_loss', handlePumpFunStopLoss);
+  bot.command('pumpfun_max_hold_time', handlePumpFunMaxHoldTime);
+  bot.command('pumpfun_slippage', handlePumpFunSlippage);
+  bot.command('pumpfun_priority_fee', handlePumpFunPriorityFee);
 
   // Handle text input for setting boost amount, buy amount, and confirmations
   bot.on('message:text', async (ctx) => {

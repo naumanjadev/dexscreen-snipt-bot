@@ -58,20 +58,62 @@ export const swapTokens = async (params: {
   sourceTokenMint: PublicKey;
   destinationTokenMint: PublicKey;
   amountInLamports: number;
+  sellPercentage?: number;  // New parameter for partial sells (1-100)
   slippage?: number;
   priorityFee?: boolean;
-}): Promise<{ success: boolean; txId?: string; error?: string }> => {
+}): Promise<{ success: boolean; txId?: string; error?: string; boost?: number }> => {
   const { 
     connection, 
     walletKeypair, 
     sourceTokenMint, 
     destinationTokenMint, 
     amountInLamports,
+    sellPercentage = 100,  // Default to 100% if not specified
     slippage = 1.0,
     priorityFee = false
   } = params;
 
   try {
+    let finalAmountInLamports = amountInLamports;
+    
+    // Handle selling with percentage logic
+    // If selling tokens (not SOL) and amountInLamports is 0, calculate based on percentage
+    const isSellingTokens = !sourceTokenMint.equals(new PublicKey('11111111111111111111111111111111'));
+    
+    if (isSellingTokens && amountInLamports === 0) {
+      try {
+        // Get token accounts to determine balance and decimals
+        const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+          walletKeypair.publicKey,
+          { mint: sourceTokenMint }
+        );
+        
+        if (tokenAccounts.value.length > 0) {
+          const tokenAccount = tokenAccounts.value[0].account.data.parsed.info;
+          const tokenBalance = BigInt(tokenAccount.tokenAmount.amount);
+          const tokenDecimals = tokenAccount.tokenAmount.decimals;
+          
+          // Calculate amount to sell based on percentage
+          let sellPercentageToUse = sellPercentage;
+          if (sellPercentageToUse <= 0 || sellPercentageToUse > 100) {
+            logger.warn(`Invalid sell percentage (${sellPercentageToUse}), defaulting to 100%`);
+            sellPercentageToUse = 100;
+          }
+          
+          // Calculate the amount of tokens to sell based on the percentage
+          finalAmountInLamports = Number((tokenBalance * BigInt(sellPercentageToUse) / BigInt(100)));
+          
+          logger.info(`Selling ${sellPercentageToUse}% of token balance (${Number(tokenBalance) / Math.pow(10, tokenDecimals)}), which is ${finalAmountInLamports / Math.pow(10, tokenDecimals)} tokens`);
+        } else {
+          logger.error(`No token account found for mint ${sourceTokenMint.toBase58()}`);
+          return { success: false, error: 'No token account found' };
+        }
+      } catch (err: any) {
+        logger.error(`Error calculating sell amount: ${err.message}`);
+        return { success: false, error: `Error calculating sell amount: ${err.message}` };
+      }
+    }
+
     // Initialize Jupiter API client
     const jupiterApi = createJupiterApiClient();
 
@@ -79,7 +121,7 @@ export const swapTokens = async (params: {
     const quoteRequest: QuoteGetRequest = {
       inputMint: sourceTokenMint.toBase58(),
       outputMint: destinationTokenMint.toBase58(),
-      amount: amountInLamports,
+      amount: finalAmountInLamports,
       // Convert percentage to basis points (1% = 100 bps)
       slippageBps: Math.round(slippage * 100),
     };
