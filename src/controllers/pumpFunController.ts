@@ -784,7 +784,7 @@ export const handlePumpFunDiagnostics = async (ctx: MyContext): Promise<void> =>
   try {
     // Test DNS resolution
     try {
-      const domains = ['socket.pumpportal.fun', 'api.pumpportal.fun', 'pumpportal.fun'];
+      const domains = ['socket.pump.fun', 'api.pump.fun', 'pump.fun'];
       for (const domain of domains) {
         try {
           const resolved = await dnsLookup(domain);
@@ -802,7 +802,7 @@ export const handlePumpFunDiagnostics = async (ctx: MyContext): Promise<void> =>
     
     // Test HTTP connectivity
     try {
-      const response = await axios.get('https://pumpportal.fun', {
+      const response = await axios.get('https://pump.fun', {
         timeout: 10000,
         httpsAgent: new https.Agent({
           rejectUnauthorized: false // For diagnostic purposes only
@@ -817,7 +817,7 @@ export const handlePumpFunDiagnostics = async (ctx: MyContext): Promise<void> =>
     // Test WebSocket connectivity
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        const ws = new WebSocket('wss://socket.pumpportal.fun/socket.io/?EIO=4&transport=websocket');
+        const ws = new WebSocket('wss://socket.pump.fun/socket.io/?EIO=4&transport=websocket');
         
         const wsResult = await new Promise<{success: boolean, error?: string}>((resolve, reject) => {
           const timeout = setTimeout(() => {
@@ -873,6 +873,7 @@ export const handlePumpFunDiagnostics = async (ctx: MyContext): Promise<void> =>
       diagResultsMsg += `To fix EC2 connectivity issues:\n`;
       diagResultsMsg += `1. Edit your EC2 security group to allow all outbound traffic\n`;
       diagResultsMsg += `2. Run these commands on your server:\n`;
+      diagResultsMsg += `echo "52.198.55.31 socket.pump.fun" | sudo tee -a /etc/hosts\n`;
       diagResultsMsg += `echo "52.198.55.31 socket.pumpportal.fun" | sudo tee -a /etc/hosts\n`;
       diagResultsMsg += `echo "nameserver 8.8.8.8" | sudo tee -a /etc/resolv.conf\n`;
     }

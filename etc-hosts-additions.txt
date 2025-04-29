@@ -1,0 +1,3 @@
+52.198.55.31 socket.pump.fun
+52.198.55.31 api.pump.fun
+52.198.55.31 pump.fun 
